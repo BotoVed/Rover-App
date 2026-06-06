@@ -6,6 +6,10 @@ plugins {
     kotlin("kapt")
 }
 
+hilt {
+    enableAggregatingTask = false
+}
+
 android {
     namespace = "dev.botoved.rover"
     compileSdk = 35
