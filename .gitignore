@@ -1,15 +1,5 @@
-*.iml
 .gradle/
-local.properties
 .idea/
 build/
-captures/
-.externalNativeBuild/
-.cxx/
-*.apk
-*.aab
-
-.DS_Store
-Thumbs.db
-.vscode/
-*.swp
+*.iml
+local.properties
