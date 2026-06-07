@@ -11,15 +11,37 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class RoverService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var rnsManager: RnsManager? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "RoverService starting")
-        startForeground(NOTIFICATION_ID, buildNotification())
-        // TODO Task 2: инициализация RNS + BLE
+        startForeground(NOTIFICATION_ID, buildNotification("Инициализация..."))
+
+        serviceScope.launch {
+            try {
+                val identity = RoverIdentity.getOrCreate(applicationContext)
+                Log.i(TAG, "Identity ready: ${identity.hexHash}")
+
+                val manager = RnsManager(applicationContext, serviceScope)
+                manager.onMessageReceived = { message ->
+                    // TODO Task 3: передавать в протокольный слой
+                    Log.i(TAG, "Message received: $message")
+                }
+                manager.start(identity)
+                rnsManager = manager
+
+                updateNotification("Подключение...")
+            } catch (e: Exception) {
+                Log.e(TAG, "RNS init failed: ${e.message}", e)
+                updateNotification("Ошибка подключения")
+            }
+        }
+
         return START_STICKY
     }
 
@@ -27,11 +49,12 @@ class RoverService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "RoverService stopping")
+        rnsManager?.stop()
         serviceScope.cancel()
         super.onDestroy()
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String): Notification {
         val channelId = "rover_service"
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
@@ -39,9 +62,14 @@ class RoverService : Service() {
         )
         return Notification.Builder(this, channelId)
             .setContentTitle("Rover")
-            .setContentText("Инициализация...")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .build()
+    }
+
+    private fun updateNotification(text: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.notify(NOTIFICATION_ID, buildNotification(text))
     }
 
     companion object {
