@@ -60,6 +60,19 @@ dependencies {
     // Msgpack
     implementation(libs.msgpack.core)
 
+    // MLKit Barcode
+    implementation(libs.mlkit.barcode)
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
+
+    // Accompanist
+    implementation(libs.accompanist.permissions)
+
+    // LocalBroadcastManager
+    implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
+
     // Reticulum / LXMF
     implementation(libs.rns.core)
     implementation(libs.rns.interfaces)

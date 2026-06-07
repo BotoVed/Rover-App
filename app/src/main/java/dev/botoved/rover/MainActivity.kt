@@ -8,30 +8,35 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.Text
 import androidx.core.content.ContextCompat
 import dev.botoved.rover.service.RoverService
+import dev.botoved.rover.ui.onboarding.OnboardingScreen
 import dev.botoved.rover.ui.theme.RoverTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val blePermissionLauncher = registerForActivityResult(
+    private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val granted = permissions.values.all { it }
-        Log.i(TAG, "BLE permissions granted: $granted")
+        val bleGranted = permissions[Manifest.permission.BLUETOOTH_SCAN] == true &&
+            permissions[Manifest.permission.BLUETOOTH_CONNECT] == true
+        val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true
+        Log.i(TAG, "BLE permissions granted: $bleGranted, location: $locationGranted")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            blePermissionLauncher.launch(
-                arrayOf(
-                    Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                )
-            )
+            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (perms.isNotEmpty()) {
+            permissionLauncher.launch(perms.toTypedArray())
         }
 
         ContextCompat.startForegroundService(
@@ -40,7 +45,9 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             RoverTheme {
-                Text("Rover")
+                OnboardingScreen(onRegistered = {
+                    // TODO Task 4: переход на Dashboard
+                })
             }
         }
     }
