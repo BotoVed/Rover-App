@@ -4,9 +4,14 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.os.IBinder
 import android.util.Log
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,7 +21,44 @@ import kotlinx.coroutines.launch
 class RoverService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private val rnsManagerReady = CompletableDeferred<RnsManager>()
     private var rnsManager: RnsManager? = null
+
+    private val registerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val dst = intent?.getStringExtra("dst") ?: return
+            val pk = intent.getStringExtra("pk") ?: return
+            val tcp = intent.getStringExtra("tcp")
+            val ssid = intent.getStringExtra("ssid")
+
+            serviceScope.launch {
+                val manager = rnsManagerReady.await()
+                if (tcp != null && ssid != null) {
+                    if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
+                        val parts = tcp.split(":")
+                        if (parts.size == 2) {
+                            val online = manager.addTcpInterfaceAndWait(
+                                parts[0], parts[1].toIntOrNull() ?: 4242,
+                            )
+                            if (online != true) {
+                                Log.w(TAG, "TCP not online, REGISTER may fail")
+                            }
+                        }
+                    } else {
+                        Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
+                    }
+                }
+                manager.sendRegister(dst, pk)
+            }
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(registerReceiver,
+                IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "RoverService starting")
@@ -28,12 +70,18 @@ class RoverService : Service() {
                 Log.i(TAG, "Identity ready: ${identity.hexHash}")
 
                 val manager = RnsManager(applicationContext, serviceScope)
+                manager.onConfigReceived = { fields ->
+                    Log.i(TAG, "CONFIG received, notifying UI")
+                    val cfgIntent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+                    LocalBroadcastManager.getInstance(this@RoverService)
+                        .sendBroadcast(cfgIntent)
+                }
                 manager.onMessageReceived = { message ->
-                    // TODO Task 3: передавать в протокольный слой
                     Log.i(TAG, "Message received: $message")
                 }
                 manager.start(identity)
                 rnsManager = manager
+                rnsManagerReady.complete(manager)
 
                 updateNotification("Подключение...")
             } catch (e: Exception) {
@@ -49,6 +97,7 @@ class RoverService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "RoverService stopping")
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(registerReceiver)
         rnsManager?.stop()
         serviceScope.cancel()
         super.onDestroy()
