@@ -1,15 +1,18 @@
 [versions]
-agp = "8.5.2"
-kotlin = "2.0.21"
+agp = "9.0.0"
+kotlin = "2.3.0"
 coreKtx = "1.13.1"
 lifecycleRuntimeKtx = "2.8.6"
 activityCompose = "1.9.2"
 composeBom = "2024.09.03"
 navigationCompose = "2.8.2"
-hilt = "2.50"
+koin = "4.0.0"
 room = "2.6.1"
 datastore = "1.1.1"
 msgpack = "0.9.8"
+reticulumKt = "v0.0.21"
+lxmfKt = "v0.0.13"
+desugar = "2.1.2"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -21,18 +24,21 @@ androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }
 androidx-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
-hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
-hilt-compiler = { group = "com.google.dagger", name = "hilt-android-compiler", version.ref = "hilt" }
+koin-android = { group = "io.insert-koin", name = "koin-android", version.ref = "koin" }
+koin-androidx-compose = { group = "io.insert-koin", name = "koin-androidx-compose", version.ref = "koin" }
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 androidx-datastore = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
 msgpack-core = { group = "org.msgpack", name = "msgpack-core", version.ref = "msgpack" }
+rns-core = { group = "com.github.torlando-tech.reticulum-kt", name = "rns-core", version.ref = "reticulumKt" }
+rns-interfaces = { group = "com.github.torlando-tech.reticulum-kt", name = "rns-interfaces", version.ref = "reticulumKt" }
+rns-android = { group = "com.github.torlando-tech.reticulum-kt", name = "rns-android", version.ref = "reticulumKt" }
+lxmf-kt = { group = "com.github.torlando-tech", name = "lxmf-kt", version.ref = "lxmfKt" }
+desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugar" }
 androidx-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }

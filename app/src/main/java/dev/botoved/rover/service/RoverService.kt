@@ -7,13 +7,11 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.util.Log
-import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
-@AndroidEntryPoint
 class RoverService : Service() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -37,11 +35,7 @@ class RoverService : Service() {
         val channelId = "rover_service"
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(
-                channelId,
-                "Rover",
-                NotificationManager.IMPORTANCE_LOW
-            )
+            NotificationChannel(channelId, "Rover", NotificationManager.IMPORTANCE_LOW)
         )
         return Notification.Builder(this, channelId)
             .setContentTitle("Rover")
