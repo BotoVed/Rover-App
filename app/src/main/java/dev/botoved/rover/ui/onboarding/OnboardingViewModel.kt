@@ -24,6 +24,7 @@ sealed class OnboardingState {
     ) : OnboardingState()
     object Sending : OnboardingState()
     object WaitingApproval : OnboardingState()
+    object Approved : OnboardingState()
     data class Error(val message: String) : OnboardingState()
 }
 
@@ -93,6 +94,10 @@ class OnboardingViewModel(
             Log.i(TAG, "ACTION_REGISTER broadcast sent")
             _state.value = OnboardingState.WaitingApproval
         }
+    }
+
+    fun onApproved() {
+        _state.value = OnboardingState.Approved
     }
 
     fun onReset() {

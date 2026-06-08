@@ -94,7 +94,7 @@ class RnsManager(
 
         router.registerDeliveryCallback { message ->
             val fields = message.fields
-            val tp = (fields?.get(0) as? Int)
+            val tp = (fields?.get(0) as? Number)?.toInt()
             Log.i(TAG, "LXMF received tp=$tp")
             when (tp) {
                 4 -> {

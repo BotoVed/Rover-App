@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
@@ -62,6 +64,26 @@ fun OnboardingScreen(
 
     LaunchedEffect(Unit) {
         cameraLauncher.launch(Manifest.permission.CAMERA)
+    }
+
+    LaunchedEffect(state) {
+        if (state is OnboardingState.Approved) {
+            onRegistered()
+        }
+    }
+
+    val context = LocalContext.current
+    DisposableEffect(Unit) {
+        val receiver = object : android.content.BroadcastReceiver() {
+            override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
+                viewModel.onApproved()
+            }
+        }
+        val filter = android.content.IntentFilter("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+        LocalBroadcastManager.getInstance(context).registerReceiver(receiver, filter)
+        onDispose {
+            LocalBroadcastManager.getInstance(context).unregisterReceiver(receiver)
+        }
     }
 
     Box(
@@ -170,6 +192,20 @@ fun OnboardingScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center
                     )
+                }
+            }
+
+            is OnboardingState.Approved -> {
+                Box(modifier = Modifier.align(Alignment.Center)) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text("Подключено!",
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
 

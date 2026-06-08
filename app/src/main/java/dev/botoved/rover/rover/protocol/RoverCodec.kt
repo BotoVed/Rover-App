@@ -19,7 +19,7 @@ object RoverCodec {
     }
 
     fun decodeTp(fields: Map<*, *>?): Int? {
-        return (fields?.get(0) as? Int)
+        return (fields?.get(0) as? Number)?.toInt()
     }
 
     fun encode(fields: Map<Int, Any>): ByteArray {
