@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dev.botoved.rover.data.ServerPreferences
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -22,8 +24,11 @@ sealed class OnboardingState {
         val ssid: String?,
         val uid: String
     ) : OnboardingState()
-    object Sending : OnboardingState()
-    object WaitingApproval : OnboardingState()
+    data class Sending(val noWifi: Boolean = false) : OnboardingState()
+    data class WaitingApproval(
+        val step: String = "Отправка запроса...",
+        val noWifi: Boolean = false
+    ) : OnboardingState()
     object Approved : OnboardingState()
     data class Error(val message: String) : OnboardingState()
 }
@@ -36,6 +41,7 @@ class OnboardingViewModel(
 
     private val _state = MutableStateFlow<OnboardingState>(OnboardingState.Scanning)
     val state: StateFlow<OnboardingState> = _state
+    private var approvalTimeoutJob: Job? = null
 
     fun onQrScanned(raw: String) {
         try {
@@ -76,10 +82,11 @@ class OnboardingViewModel(
         tcp: String?,
         ssid: String?,
         uid: String,
+        noWifi: Boolean,
         context: Context
     ) {
         viewModelScope.launch {
-            _state.value = OnboardingState.Sending
+            _state.value = OnboardingState.Sending(noWifi = noWifi)
             prefs.saveServer(destHash, name, pk, tcp, ssid)
             prefs.saveUid(uid)
 
@@ -92,15 +99,37 @@ class OnboardingViewModel(
             }
             LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
             Log.i(TAG, "ACTION_REGISTER broadcast sent")
-            _state.value = OnboardingState.WaitingApproval
+            _state.value = OnboardingState.WaitingApproval(
+                step = "Запрос отправлен, ожидаем сервер...",
+                noWifi = noWifi
+            )
+
+            approvalTimeoutJob?.cancel()
+            approvalTimeoutJob = viewModelScope.launch {
+                delay(30_000)
+                if (_state.value is OnboardingState.WaitingApproval) {
+                    _state.value = OnboardingState.Error(
+                        "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
+                    )
+                }
+            }
         }
     }
 
     fun onApproved() {
+        approvalTimeoutJob?.cancel()
         _state.value = OnboardingState.Approved
     }
 
     fun onReset() {
+        approvalTimeoutJob?.cancel()
         _state.value = OnboardingState.Scanning
+    }
+
+    fun updateStep(step: String) {
+        val current = _state.value
+        if (current is OnboardingState.WaitingApproval) {
+            _state.value = current.copy(step = step)
+        }
     }
 }
