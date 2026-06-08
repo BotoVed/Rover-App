@@ -30,6 +30,7 @@ class RoverService : Service() {
             val pk = intent.getStringExtra("pk") ?: return
             val tcp = intent.getStringExtra("tcp")
             val ssid = intent.getStringExtra("ssid")
+            val uid = intent.getStringExtra("uid") ?: ""
 
             serviceScope.launch {
                 val manager = rnsManagerReady.await()
@@ -48,7 +49,7 @@ class RoverService : Service() {
                         Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
                     }
                 }
-                manager.sendRegister(dst, pk)
+                manager.sendRegister(dst, pk, uid)
             }
         }
     }

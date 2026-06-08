@@ -123,7 +123,7 @@ fun OnboardingScreen(
                     }
                     val context = LocalContext.current
                     Button(
-                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, context) },
+                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, context) },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         )

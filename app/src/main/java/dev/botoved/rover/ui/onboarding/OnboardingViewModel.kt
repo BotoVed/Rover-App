@@ -19,7 +19,8 @@ sealed class OnboardingState {
         val name: String,
         val pk: String,
         val tcp: String?,
-        val ssid: String?
+        val ssid: String?,
+        val uid: String
     ) : OnboardingState()
     object Sending : OnboardingState()
     object WaitingApproval : OnboardingState()
@@ -53,14 +54,15 @@ class OnboardingViewModel(
             val pk = rvr.getString("pk")
             val tcp = rvr.optString("tcp").ifEmpty { null }
             val ssid = rvr.optString("ssid").ifEmpty { null }
+            val uid = rvr.optString("uid", "")
 
             if (dst.length != 32 || !dst.all { it.isLetterOrDigit() }) {
                 _state.value = OnboardingState.Error("Неверный destination hash: $dst")
                 return
             }
 
-            Log.i(TAG, "QR v2 parsed: dst=$dst nm=$nm tcp=$tcp ssid=$ssid")
-            _state.value = OnboardingState.Confirming(dst, nm, pk, tcp, ssid)
+            Log.i(TAG, "QR v2 parsed: dst=$dst nm=$nm tcp=$tcp ssid=$ssid uid=$uid")
+            _state.value = OnboardingState.Confirming(dst, nm, pk, tcp, ssid, uid)
         } catch (e: Exception) {
             _state.value = OnboardingState.Error("Не удалось прочитать QR: ${e.message}")
         }
@@ -72,15 +74,18 @@ class OnboardingViewModel(
         pk: String,
         tcp: String?,
         ssid: String?,
+        uid: String,
         context: Context
     ) {
         viewModelScope.launch {
             _state.value = OnboardingState.Sending
             prefs.saveServer(destHash, name, pk, tcp, ssid)
+            prefs.saveUid(uid)
 
             val intent = Intent("dev.botoved.rover.ACTION_REGISTER").apply {
                 putExtra("dst", destHash)
                 putExtra("pk", pk)
+                putExtra("uid", uid)
                 tcp?.let { putExtra("tcp", it) }
                 ssid?.let { putExtra("ssid", it) }
             }

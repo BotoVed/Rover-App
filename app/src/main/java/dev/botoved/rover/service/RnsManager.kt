@@ -21,6 +21,7 @@ import network.reticulum.interfaces.toRef
 import network.reticulum.transport.Transport
 import network.reticulum.lxmf.LXMessage
 import network.reticulum.lxmf.LXMRouter
+import dev.botoved.rover.rover.protocol.RoverCodec
 
 class RnsManager(
     private val context: Context,
@@ -147,7 +148,7 @@ class RnsManager(
         }
     }
 
-    suspend fun sendRegister(destHash: String, serverPkBase64: String) {
+    suspend fun sendRegister(destHash: String, serverPkBase64: String, uid: String) {
         val router = lxmRouter ?: run {
             Log.e(TAG, "LXMRouter not ready")
             return
@@ -181,7 +182,7 @@ class RnsManager(
             Log.i(TAG, "Server destination hash: ${serverDest.hexHash}")
             Log.i(TAG, "Expected hash from QR: $destHash")
 
-            val fields: MutableMap<Int, Any> = mutableMapOf(0 to 9)
+            val fields: MutableMap<Int, Any> = RoverCodec.encodeRegister(uid).toMutableMap()
 
             val message = LXMessage.create(
                 destination = serverDest,

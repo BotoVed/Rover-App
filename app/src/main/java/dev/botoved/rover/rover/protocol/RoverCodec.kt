@@ -14,8 +14,8 @@ object MessageTypes {
 
 object RoverCodec {
 
-    fun encodeRegister(): Map<Int, Any> {
-        return mapOf(0 to MessageTypes.REGISTER)
+    fun encodeRegister(uid: String): Map<Int, Any> {
+        return mapOf(0 to MessageTypes.REGISTER, 1 to uid)
     }
 
     fun decodeTp(fields: Map<*, *>?): Int? {

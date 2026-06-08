@@ -19,6 +19,7 @@ class ServerPreferences(private val context: Context) {
         val SERVER_TCP = stringPreferencesKey("server_tcp")
         val SERVER_SSID = stringPreferencesKey("server_ssid")
         val IS_REGISTERED = stringPreferencesKey("is_registered")
+        val KEY_UID = stringPreferencesKey("uid")
     }
 
     val serverDestHash: Flow<String?> = context.dataStore.data
@@ -58,6 +59,13 @@ class ServerPreferences(private val context: Context) {
 
     suspend fun setApproved() {
         context.dataStore.edit { it[IS_REGISTERED] = "approved" }
+    }
+
+    val uid: Flow<String?> = context.dataStore.data
+        .map { it[KEY_UID] }
+
+    suspend fun saveUid(uid: String) {
+        context.dataStore.edit { it[KEY_UID] = uid }
     }
 
     suspend fun clear() {
