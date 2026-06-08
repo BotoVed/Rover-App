@@ -204,16 +204,7 @@ fun DashboardScreen(
                         }
                     }
                     else -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "Настройки",
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 16.sp
-                            )
-                        }
+                        SettingsTab(onReconnect = { viewModel.reconnect() })
                     }
                 }
             }
@@ -1002,4 +993,26 @@ private fun deviceTypeLabel(type: String): String = when (type) {
     "FN" -> "Вентилятор"
     "BT" -> "Кнопка"
     else -> "Устройство"
+}
+
+@Composable
+private fun SettingsTab(onReconnect: () -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            "Настройки",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 16.sp
+        )
+        Button(
+            onClick = onReconnect,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error
+            )
+        ) {
+            Text("Переподключиться")
+        }
+    }
 }

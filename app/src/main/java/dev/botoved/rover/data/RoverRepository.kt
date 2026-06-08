@@ -15,9 +15,9 @@ class RoverRepository(private val db: RoverDatabase) {
     suspend fun saveMeta(fields: Map<*, *>) {
         val data = fields[3] as? Map<*, *> ?: return
         val meta = ServerMetaEntity(
-            serverName = (data["server_name"] as? String) ?: "Rover Hub",
-            version = (data["version"] as? String) ?: "",
-            brand = (data["brand"] as? String) ?: "Rover"
+            brand = (data[0] as? String) ?: "Rover",
+            version = (data[1] as? String) ?: "",
+            serverName = (data[2] as? String) ?: "Rover Hub"
         )
         db.serverMetaDao().insert(meta)
         Log.i(TAG, "DB: meta saved name=${meta.serverName}")
@@ -27,8 +27,8 @@ class RoverRepository(private val db: RoverDatabase) {
         val list = fields[3] as? List<*> ?: return
         val entities = list.mapNotNull { item ->
             val m = item as? Map<*, *> ?: return@mapNotNull null
-            val id = (m["id"] as? Number)?.toInt() ?: return@mapNotNull null
-            val name = (m["name"] as? String) ?: return@mapNotNull null
+            val id = (m[0] as? Number)?.toInt() ?: return@mapNotNull null
+            val name = (m[1] as? String) ?: return@mapNotNull null
             AreaEntity(id = id, name = name)
         }
         db.areaDao().deleteAll()
@@ -36,14 +36,20 @@ class RoverRepository(private val db: RoverDatabase) {
         Log.i(TAG, "DB: ${entities.size} areas saved")
     }
 
+    suspend fun clearAll() {
+        db.areaDao().deleteAll()
+        db.deviceDao().deleteAll()
+        Log.i(TAG, "DB: all tables cleared")
+    }
+
     suspend fun saveDevices(fields: Map<*, *>) {
         val list = fields[3] as? List<*> ?: return
         val entities = list.mapNotNull { item ->
             val m = item as? Map<*, *> ?: return@mapNotNull null
-            val id = (m["id"] as? Number)?.toInt() ?: return@mapNotNull null
-            val name = (m["n"] as? String) ?: return@mapNotNull null
-            val type = (m["t"] as? String) ?: return@mapNotNull null
-            val areaId = (m["a"] as? Number)?.toInt()
+            val id = (m[0] as? Number)?.toInt() ?: return@mapNotNull null
+            val name = (m[1] as? String) ?: return@mapNotNull null
+            val type = (m[2] as? String) ?: return@mapNotNull null
+            val areaId = (m[3] as? Number)?.toInt()
             DeviceEntity(shortId = id, name = name, type = type, areaId = areaId)
         }
         db.deviceDao().deleteAll()

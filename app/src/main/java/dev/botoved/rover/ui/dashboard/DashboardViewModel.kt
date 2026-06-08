@@ -6,10 +6,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dev.botoved.rover.data.RoverRepository
+import dev.botoved.rover.data.ServerPreferences
 import dev.botoved.rover.data.db.AreaEntity
 import dev.botoved.rover.data.db.DeviceEntity
 import dev.botoved.rover.data.db.ServerMetaEntity
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 
 data class DeviceState(
     val shortId: Int,
@@ -148,7 +150,7 @@ class DashboardViewModel(
     fun onStatusReceived(states: List<Map<*, *>>) {
         val current = _deviceStates.value.toMutableMap()
         for (s in states) {
-            val id = (s["id"] as? Int) ?: continue
+            val id = (s["0"] as? Int) ?: continue
             val existing = current[id] ?: DeviceState(
                 shortId = id, name = "", type = "", areaId = null
             )
@@ -161,7 +163,7 @@ class DashboardViewModel(
     }
 
     fun onPushReceived(fields: Map<*, *>) {
-        val id = (fields["id"] as? Int) ?: return
+        val id = (fields["0"] as? Int) ?: return
         val current = _deviceStates.value.toMutableMap()
         val existing = current[id] ?: DeviceState(
             shortId = id, name = "", type = "", areaId = null
@@ -178,6 +180,13 @@ class DashboardViewModel(
         _isOnline.value = online
     }
 
+    fun reconnect() {
+        viewModelScope.launch {
+            repository.clearAll()
+            ServerPreferences(context).clear()
+        }
+    }
+
     fun onZoneExpandToggle(areaId: Int?) {
         _expandedZones.value = _expandedZones.value.toMutableMap().apply {
             val key = areaId ?: -1
@@ -186,21 +195,20 @@ class DashboardViewModel(
     }
 
     private fun parseIsOn(fields: Map<*, *>): Boolean? {
-        return when (val s = fields["s"]) {
-            is Boolean -> s
-            is String -> s == "on" || s == "open" || s == "playing" || s == "unlocked"
+        return when (val v = fields["1"]) {
+            is String -> v == "on" || v == "open" || v == "playing" || v == "unlocked"
             else -> null
         }
     }
 
     private fun parsePrimaryValue(fields: Map<*, *>): String? {
-        fields["t"]?.let { return "${it}°C" }
-        fields["b"]?.let { return "${it}%" }
-        fields["p"]?.let { return "${it}%" }
-        fields["vol"]?.let { return "${it}%" }
-        fields["sp"]?.let { return "${it}%" }
-        val v = fields["v"]
-        val u = fields["u"]
+        fields["6"]?.let { return "${it}°C" }
+        fields["2"]?.let { return "${it}%" }
+        fields["5"]?.let { return "${it}%" }
+        fields["14"]?.let { return "${it}%" }
+        fields["21"]?.let { return "${it}%" }
+        val v = fields["1"]
+        val u = fields["25"]
         if (v != null) return if (u != null) "$v $u" else "$v"
         return null
     }
