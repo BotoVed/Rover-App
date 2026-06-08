@@ -11,15 +11,18 @@ import android.content.IntentFilter
 import android.os.IBinder
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import dev.botoved.rover.data.RoverRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import org.koin.android.ext.android.inject
 
 class RoverService : Service() {
 
+    private val repository: RoverRepository by inject()
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val rnsManagerReady = CompletableDeferred<RnsManager>()
     private var rnsManager: RnsManager? = null
@@ -72,13 +75,70 @@ class RoverService : Service() {
 
                 val manager = RnsManager(applicationContext, serviceScope)
                 manager.onConfigReceived = { fields ->
-                    Log.i(TAG, "CONFIG received, notifying UI")
-                    val cfgIntent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
-                    LocalBroadcastManager.getInstance(this@RoverService)
-                        .sendBroadcast(cfgIntent)
+                    val section = fields?.get(1) as? String
+                    val data = fields?.get(3)
+                    Log.i(TAG, "CONFIG section=$section dataType=${data?.javaClass?.simpleName}")
+                    if (data != null) Log.i(TAG, "CONFIG data preview=${
+                        if (data is List<*>) "list(${data.size})"
+                        else if (data is Map<*, *>) "map(${data.size} keys)"
+                        else data.toString().take(100)
+                    }")
+                    serviceScope.launch {
+                        when (section) {
+                            "m" -> repository.saveMeta(fields ?: emptyMap<Any, Any>())
+                            "a" -> repository.saveAreas(fields ?: emptyMap<Any, Any>())
+                            "d" -> repository.saveDevices(fields ?: emptyMap<Any, Any>())
+                        }
+                    }
+                    if (section == "d") {
+                        val cfgIntent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+                        LocalBroadcastManager.getInstance(this@RoverService)
+                            .sendBroadcast(cfgIntent)
+                    }
                 }
                 manager.onMessageReceived = { message ->
-                    Log.i(TAG, "Message received: $message")
+                    val fields = message.fields
+                    val tp = (fields?.get(0) as? Number)?.toInt()
+                    when (tp) {
+                        2 -> {
+                            val states = fields?.get(2) as? List<*>
+                            if (states != null) {
+                                if (states.isNotEmpty()) {
+                                    val first = states.firstOrNull() as? Map<*, *>
+                                    if (first != null) {
+                                        val keyTypes = first.keys.joinToString { "${it}(${it?.javaClass?.simpleName})" }
+                                        Log.i(TAG, "STATUS first device key types: $keyTypes")
+                                    }
+                                }
+                                val intent = Intent("dev.botoved.rover.ACTION_STATUS").apply {
+                                    val arr = org.json.JSONArray()
+                                    states.filterIsInstance<Map<*, *>>().forEach { s ->
+                                        val obj = org.json.JSONObject()
+                                        s.forEach { (k, v) -> obj.put(k.toString(), v) }
+                                        arr.put(obj)
+                                    }
+                                    putExtra("states", arr.toString())
+                                }
+                                LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
+                                Log.i(TAG, "STATUS broadcast: ${states.size} devices")
+                            }
+                        }
+                        3 -> {
+                            val keyTypes = fields?.keys?.joinToString { "${it}(${it?.javaClass?.simpleName})" }
+                            Log.i(TAG, "PUSH keys: $keyTypes")
+                            val intent = Intent("dev.botoved.rover.ACTION_PUSH").apply {
+                                val obj = org.json.JSONObject()
+                                fields?.forEach { (k, v) -> obj.put(k.toString(), v) }
+                                putExtra("fields", obj.toString())
+                            }
+                            LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
+                            Log.i(TAG, "PUSH broadcast id=${fields?.get(9)}")
+                        }
+                        6 -> {
+                            Log.i(TAG, "PING/PONG received — link alive")
+                        }
+                        else -> Log.i(TAG, "Message tp=$tp — unhandled")
+                    }
                 }
                 manager.start(identity)
                 rnsManager = manager

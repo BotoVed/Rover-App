@@ -8,12 +8,30 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import androidx.core.content.ContextCompat
+import dev.botoved.rover.data.ServerPreferences
 import dev.botoved.rover.service.RoverService
+import dev.botoved.rover.ui.AppDestination
+import dev.botoved.rover.ui.MainViewModel
+import dev.botoved.rover.ui.dashboard.DashboardScreen
 import dev.botoved.rover.ui.onboarding.OnboardingScreen
 import dev.botoved.rover.ui.theme.RoverTheme
+import kotlinx.coroutines.launch
+import org.koin.android.ext.android.inject
+import org.koin.androidx.viewmodel.ext.android.viewModel as koinViewModel
 
 class MainActivity : ComponentActivity() {
+
+    private val mainViewModel: MainViewModel by koinViewModel()
+    private val prefs: ServerPreferences by inject()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -45,9 +63,21 @@ class MainActivity : ComponentActivity() {
         )
         setContent {
             RoverTheme {
-                OnboardingScreen(onRegistered = {
-                    // TODO Task 4: переход на Dashboard
-                })
+                val destination by mainViewModel.destination.collectAsState()
+                when (destination) {
+                    is AppDestination.Splash -> {
+                        Box(modifier = Modifier.fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background))
+                    }
+                    is AppDestination.Onboarding -> {
+                        OnboardingScreen(onRegistered = {
+                            lifecycleScope.launch { prefs.setApproved() }
+                        })
+                    }
+                    is AppDestination.Dashboard -> {
+                        DashboardScreen()
+                    }
+                }
             }
         }
     }

@@ -1,0 +1,194 @@
+From 8a87538f4c2020c8a0e735bf4ede33c750ed5830 Mon Sep 17 00:00:00 2001
+From: BotoVed <50742084+BotoVed@users.noreply.github.com>
+Date: Mon, 8 Jun 2026 11:56:04 +0300
+Subject: [PATCH] fix: invert noWifi logic, center UI text with fillMaxWidth
+
+---
+ .../rover/ui/onboarding/OnboardingScreen.kt   | 48 ++++++++++++++-----
+ .../ui/onboarding/OnboardingViewModel.kt      | 37 ++++++++++++--
+ 2 files changed, 69 insertions(+), 16 deletions(-)
+
+diff --git a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
+index 36c9d53..d0e9907 100644
+--- a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
++++ b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
+@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
+ import androidx.compose.foundation.layout.Box
+ import androidx.compose.foundation.layout.Column
+ import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
+ import androidx.compose.foundation.layout.padding
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material3.Button
+@@ -144,8 +145,9 @@ fun OnboardingScreen(
+                         }
+                     }
+                     val context = LocalContext.current
++                    val noWifi = s.tcp == null || s.ssid == null
+                     Button(
+-                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, context) },
++                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, noWifi, context) },
+                         colors = ButtonDefaults.buttonColors(
+                             containerColor = MaterialTheme.colorScheme.primary
+                         )
+@@ -161,13 +163,27 @@ fun OnboardingScreen(
+ 
+             is OnboardingState.Sending -> {
+                 Column(
+-                    modifier = Modifier.align(Alignment.Center),
++                    modifier = Modifier
++                        .align(Alignment.Center)
++                        .fillMaxWidth()
++                        .padding(horizontal = 32.dp),
+                     horizontalAlignment = Alignment.CenterHorizontally,
+                     verticalArrangement = Arrangement.spacedBy(16.dp)
+                 ) {
+                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+-                    Text("Отправка запроса...",
+-                        color = MaterialTheme.colorScheme.onBackground)
++                    Text(
++                        "Отправка запроса...",
++                        color = MaterialTheme.colorScheme.onBackground,
++                        textAlign = TextAlign.Center
++                    )
++                    if (s.noWifi) {
++                        Text(
++                            "Нет подключения к Wi-Fi сервера.\nРегистрация через BLE может быть медленнее.",
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                            fontSize = 12.sp,
++                            textAlign = TextAlign.Center
++                        )
++                    }
+                 }
+             }
+ 
+@@ -175,23 +191,31 @@ fun OnboardingScreen(
+                 Column(
+                     modifier = Modifier
+                         .align(Alignment.Center)
+-                        .padding(24.dp),
++                        .fillMaxWidth()
++                        .padding(horizontal = 32.dp),
+                     horizontalAlignment = Alignment.CenterHorizontally,
+                     verticalArrangement = Arrangement.spacedBy(16.dp)
+                 ) {
+                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                     Text(
+-                        "Ожидание подтверждения",
++                        s.step,
+                         fontSize = 18.sp,
+                         fontWeight = FontWeight.Medium,
+-                        color = MaterialTheme.colorScheme.onBackground
+-                    )
+-                    Text(
+-                        "Открой Home Assistant и одобри запрос в\nНастройки → Rover → Pending",
+-                        fontSize = 13.sp,
+-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        color = MaterialTheme.colorScheme.onBackground,
+                         textAlign = TextAlign.Center
+                     )
++                    if (s.noWifi) {
++                        Text(
++                            "Нет Wi-Fi, используется BLE",
++                            fontSize = 13.sp,
++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
++                            textAlign = TextAlign.Center
++                        )
++                    }
++                    TextButton(onClick = { viewModel.onReset() }) {
++                        Text("Отмена",
++                            color = MaterialTheme.colorScheme.onSurfaceVariant)
++                    }
+                 }
+             }
+ 
+diff --git a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
+index f26c344..2e4a8a3 100644
+--- a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
++++ b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
+@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModel
+ import androidx.lifecycle.viewModelScope
+ import androidx.localbroadcastmanager.content.LocalBroadcastManager
+ import dev.botoved.rover.data.ServerPreferences
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.flow.StateFlow
+ import kotlinx.coroutines.launch
+@@ -22,8 +24,11 @@ sealed class OnboardingState {
+         val ssid: String?,
+         val uid: String
+     ) : OnboardingState()
+-    object Sending : OnboardingState()
+-    object WaitingApproval : OnboardingState()
++    data class Sending(val noWifi: Boolean = false) : OnboardingState()
++    data class WaitingApproval(
++        val step: String = "Отправка запроса...",
++        val noWifi: Boolean = false
++    ) : OnboardingState()
+     object Approved : OnboardingState()
+     data class Error(val message: String) : OnboardingState()
+ }
+@@ -36,6 +41,7 @@ class OnboardingViewModel(
+ 
+     private val _state = MutableStateFlow<OnboardingState>(OnboardingState.Scanning)
+     val state: StateFlow<OnboardingState> = _state
++    private var approvalTimeoutJob: Job? = null
+ 
+     fun onQrScanned(raw: String) {
+         try {
+@@ -76,10 +82,11 @@ class OnboardingViewModel(
+         tcp: String?,
+         ssid: String?,
+         uid: String,
++        noWifi: Boolean,
+         context: Context
+     ) {
+         viewModelScope.launch {
+-            _state.value = OnboardingState.Sending
++            _state.value = OnboardingState.Sending(noWifi = noWifi)
+             prefs.saveServer(destHash, name, pk, tcp, ssid)
+             prefs.saveUid(uid)
+ 
+@@ -92,15 +99,37 @@ class OnboardingViewModel(
+             }
+             LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+             Log.i(TAG, "ACTION_REGISTER broadcast sent")
+-            _state.value = OnboardingState.WaitingApproval
++            _state.value = OnboardingState.WaitingApproval(
++                step = "Запрос отправлен, ожидаем сервер...",
++                noWifi = noWifi
++            )
++
++            approvalTimeoutJob?.cancel()
++            approvalTimeoutJob = viewModelScope.launch {
++                delay(30_000)
++                if (_state.value is OnboardingState.WaitingApproval) {
++                    _state.value = OnboardingState.Error(
++                        "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
++                    )
++                }
++            }
+         }
+     }
+ 
+     fun onApproved() {
++        approvalTimeoutJob?.cancel()
+         _state.value = OnboardingState.Approved
+     }
+ 
+     fun onReset() {
++        approvalTimeoutJob?.cancel()
+         _state.value = OnboardingState.Scanning
+     }
++
++    fun updateStep(step: String) {
++        val current = _state.value
++        if (current is OnboardingState.WaitingApproval) {
++            _state.value = current.copy(step = step)
++        }
++    }
+ }
+-- 
+2.43.0
+

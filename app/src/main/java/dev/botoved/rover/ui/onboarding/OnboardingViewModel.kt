@@ -119,6 +119,10 @@ class OnboardingViewModel(
     fun onApproved() {
         approvalTimeoutJob?.cancel()
         _state.value = OnboardingState.Approved
+        viewModelScope.launch {
+            prefs.setApproved()
+            Log.i(TAG, "Application approved — DataStore updated")
+        }
     }
 
     fun onReset() {

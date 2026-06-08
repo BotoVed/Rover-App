@@ -18,6 +18,7 @@ private val RoverColorScheme = darkColorScheme(
     background = BgPrimary,
     surface = BgCard,
     surfaceVariant = BgSecondary,
+    onSurfaceVariant = Color(0xFFA0A0A0),
 )
 
 @Composable
