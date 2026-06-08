@@ -133,6 +133,8 @@ class RnsManager(
                 if (tcpInterface.online.value) {
                     val elapsed = timeoutMs - (deadline - System.currentTimeMillis())
                     Log.i(TAG, "TCP interface online after ${elapsed}ms")
+                    deliveryDestination?.announce()
+                    Log.i(TAG, "Delivery destination announced: ${deliveryDestination?.hexHash}")
                     return true
                 }
                 delay(200)
