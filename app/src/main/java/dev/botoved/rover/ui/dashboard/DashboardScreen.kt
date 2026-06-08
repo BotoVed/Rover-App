@@ -159,7 +159,8 @@ fun DashboardScreen(
 
     ModalBottomSheetHost(
         sheetDevice = sheetDevice,
-        onDismissSheet = { sheetDevice = null }
+        onDismissSheet = { sheetDevice = null },
+        viewModel = viewModel
     ) {
         Scaffold(
             topBar = {
@@ -196,7 +197,8 @@ fun DashboardScreen(
                                 ZoneSection(
                                     zone = zone,
                                     onToggle = { viewModel.onZoneExpandToggle(zone.areaId) },
-                                    onDeviceClick = { sheetDevice = it }
+                                    onDeviceClick = { sheetDevice = it },
+                                    onDeviceToggle = { device, isOn -> viewModel.onToggle(device, isOn) }
                                 )
                             }
                         }
@@ -352,7 +354,8 @@ private fun SkeletonContent() {
 private fun ZoneSection(
     zone: ZoneUiState,
     onToggle: () -> Unit,
-    onDeviceClick: (DeviceState) -> Unit
+    onDeviceClick: (DeviceState) -> Unit,
+    onDeviceToggle: (DeviceState, Boolean) -> Unit
 ) {
     val activeCount = zone.devices.count { it.isOn == true }
     val hasAlarm = zone.devices.any { it.type == "AL" && (it.isOn == true || it.primaryValue != null) }
@@ -432,7 +435,8 @@ private fun ZoneSection(
                     devices.forEach { device ->
                         DeviceCard(
                             device = device,
-                            onClick = { onDeviceClick(device) }
+                            onClick = { onDeviceClick(device) },
+                            onToggle = { isOn -> onDeviceToggle(device, isOn) }
                         )
                     }
                 }
@@ -444,7 +448,8 @@ private fun ZoneSection(
 @Composable
 private fun DeviceCard(
     device: DeviceState,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onToggle: ((Boolean) -> Unit)? = null
 ) {
     val isActive = device.isOn == true
     val borderColor = if (isActive) Gold else MaterialTheme.colorScheme.surfaceVariant
@@ -493,7 +498,7 @@ private fun DeviceCard(
                     }
                 }
                 Spacer(Modifier.width(8.dp))
-                DeviceRightControl(device)
+                DeviceRightControl(device = device, onToggle = onToggle)
             }
             if (device.isPending) {
                 Box(
@@ -509,13 +514,16 @@ private fun DeviceCard(
 }
 
 @Composable
-private fun DeviceRightControl(device: DeviceState) {
+private fun DeviceRightControl(
+    device: DeviceState,
+    onToggle: ((Boolean) -> Unit)? = null
+) {
     when (device.type) {
         "SW", "LT", "FN", "CL" -> {
             val isOn = device.isOn == true
             Switch(
                 checked = isOn,
-                onCheckedChange = null,
+                onCheckedChange = { onToggle?.invoke(it) },
                 colors = androidx.compose.material3.SwitchDefaults.colors(
                     checkedThumbColor = Gold,
                     checkedTrackColor = GoldAlpha,
@@ -577,6 +585,7 @@ private fun DeviceRightControl(device: DeviceState) {
 private fun ModalBottomSheetHost(
     sheetDevice: DeviceState?,
     onDismissSheet: () -> Unit,
+    viewModel: DashboardViewModel,
     content: @Composable () -> Unit
 ) {
     if (sheetDevice != null) {
@@ -587,7 +596,7 @@ private fun ModalBottomSheetHost(
             containerColor = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
         ) {
-            DeviceDetailSheetContent(device = sheetDevice, onClose = onDismissSheet)
+            DeviceDetailSheetContent(device = sheetDevice, onClose = onDismissSheet, viewModel = viewModel)
         }
     }
     content()
@@ -596,7 +605,8 @@ private fun ModalBottomSheetHost(
 @Composable
 private fun DeviceDetailSheetContent(
     device: DeviceState,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    viewModel: DashboardViewModel
 ) {
     val isActive = device.isOn == true
     Column(
@@ -630,17 +640,17 @@ private fun DeviceDetailSheetContent(
         }
 
         when (device.type) {
-            "SW" -> SwitchControl(device)
-            "LT" -> LightControl(device)
-            "CV" -> CoverControl(device)
-            "CL" -> ClimateControl(device)
-            "LK" -> LockControl(device)
-            "MS" -> MediaControl(device)
-            "AL" -> AlarmControl(device)
+            "SW" -> SwitchControl(device, viewModel)
+            "LT" -> LightControl(device, viewModel)
+            "CV" -> CoverControl(device, viewModel)
+            "CL" -> ClimateControl(device, viewModel)
+            "LK" -> LockControl(device, viewModel)
+            "MS" -> MediaControl(device, viewModel)
+            "AL" -> AlarmControl(device, viewModel)
             "SE" -> SensorControl(device)
-            "FN" -> FanControl(device)
-            "SC" -> SceneControl(device)
-            "BT" -> ButtonControl(device)
+            "FN" -> FanControl(device, viewModel)
+            "SC" -> SceneControl(device, viewModel)
+            "BT" -> ButtonControl(device, viewModel)
         }
 
         Button(
@@ -658,7 +668,8 @@ private fun DeviceDetailSheetContent(
 }
 
 @Composable
-private fun SwitchControl(device: DeviceState) {
+private fun SwitchControl(device: DeviceState, viewModel: DashboardViewModel) {
+    var checked by remember { mutableStateOf(device.isOn ?: false) }
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
@@ -666,8 +677,11 @@ private fun SwitchControl(device: DeviceState) {
     ) {
         Text("Включить", color = MaterialTheme.colorScheme.onBackground, fontSize = 16.sp)
         Switch(
-            checked = device.isOn == true,
-            onCheckedChange = null,
+            checked = checked,
+            onCheckedChange = {
+                checked = it
+                viewModel.onToggle(device, it)
+            },
             colors = androidx.compose.material3.SwitchDefaults.colors(
                 checkedThumbColor = Gold,
                 checkedTrackColor = GoldAlpha
@@ -677,76 +691,80 @@ private fun SwitchControl(device: DeviceState) {
 }
 
 @Composable
-private fun LightControl(device: DeviceState) {
+private fun LightControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SwitchControl(device)
-        SliderRow("Яркость", 75, 0, 100, "%")
-        SliderRow("Цвет. температура", 4200, 2700, 6500, "K")
+        SwitchControl(device, viewModel)
+        SliderRow("Яркость", 75, 0, 100, "%",
+            onValueChangeFinished = { viewModel.onSlider(device, 3, it) })
+        SliderRow("Цвет. температура", 4200, 2700, 6500, "K",
+            onValueChangeFinished = { viewModel.onSlider(device, 4, it) })
     }
 }
 
 @Composable
-private fun CoverControl(device: DeviceState) {
+private fun CoverControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
-                onClick = {},
+                onClick = { viewModel.onAction(device, "open") },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Gold),
                 shape = RoundedCornerShape(10.dp)
             ) { Text("Открыть") }
             FilledTonalButton(
-                onClick = {},
+                onClick = { viewModel.onAction(device, "stop") },
                 modifier = Modifier.weight(1f),
                 shape = RoundedCornerShape(10.dp)
             ) { Text("Стоп") }
             Button(
-                onClick = {},
+                onClick = { viewModel.onAction(device, "close") },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Red),
                 shape = RoundedCornerShape(10.dp)
             ) { Text("Закрыть", color = Color.White) }
         }
-        SliderRow("Позиция", 50, 0, 100, "%")
+        SliderRow("Позиция", 50, 0, 100, "%",
+            onValueChangeFinished = { viewModel.onSlider(device, 5, it) })
     }
 }
 
 @Composable
-private fun ClimateControl(device: DeviceState) {
+private fun ClimateControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SwitchControl(device)
-        SliderRow("Температура", 22, 16, 30, "°C")
+        SwitchControl(device, viewModel)
+        SliderRow("Температура", 22, 16, 30, "°C",
+            onValueChangeFinished = { viewModel.onSlider(device, 6, it) })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("cool", "heat", "fan_only", "auto", "dry").forEach { mode ->
-                Chip(mode, mode == "cool")
+                Chip(mode, mode == "cool", onClick = { viewModel.onHvacMode(device, mode) })
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("low", "mid", "high", "auto").forEach { speed ->
-                Chip(speed, speed == "auto")
+                Chip(speed, speed == "auto", onClick = { viewModel.onFanMode(device, speed) })
             }
         }
     }
 }
 
 @Composable
-private fun LockControl(device: DeviceState) {
+private fun LockControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Button(
-                onClick = {},
+                onClick = { viewModel.onAction(device, "unlock") },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Gold),
                 shape = RoundedCornerShape(10.dp)
             ) { Text("Открыть") }
             Button(
-                onClick = {},
+                onClick = { viewModel.onAction(device, "lock") },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Red),
                 shape = RoundedCornerShape(10.dp)
@@ -766,44 +784,45 @@ private fun LockControl(device: DeviceState) {
 }
 
 @Composable
-private fun MediaControl(device: DeviceState) {
+private fun MediaControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
-            IconButton(onClick = {}) {
+            IconButton(onClick = { viewModel.onAction(device, "prev") }) {
                 Icon(Icons.Default.ChevronRight,
                     contentDescription = "Назад",
                     tint = MaterialTheme.colorScheme.onBackground,
                     modifier = Modifier.graphicsLayer { rotationZ = 180f }
                 )
             }
-            IconButton(onClick = {}) {
+            IconButton(onClick = { viewModel.onAction(device, "play") }) {
                 Icon(Icons.Default.PlayArrow,
                     contentDescription = "Воспроизвести",
                     tint = Gold,
                     modifier = Modifier.size(40.dp)
                 )
             }
-            IconButton(onClick = {}) {
+            IconButton(onClick = { viewModel.onAction(device, "next") }) {
                 Icon(Icons.Default.ChevronRight,
                     contentDescription = "Далее",
                     tint = MaterialTheme.colorScheme.onBackground
                 )
             }
         }
-        SliderRow("Громкость", 50, 0, 100, "%")
+        SliderRow("Громкость", 50, 0, 100, "%",
+            onValueChangeFinished = { viewModel.onSlider(device, 8, it) })
     }
 }
 
 @Composable
-private fun AlarmControl(device: DeviceState) {
+private fun AlarmControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf("armed_away" to "Полная", "armed_home" to "Дома", "armed_night" to "Ночь", "disarmed" to "Снята")
+        listOf("arm_away" to "Полная", "arm_home" to "Дома", "arm_night" to "Ночь", "disarm" to "Снята")
             .forEach { (value, label) ->
                 FilledTonalButton(
-                    onClick = {},
+                    onClick = { viewModel.onAction(device, value) },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(10.dp)
                 ) { Text(label) }
@@ -837,22 +856,23 @@ private fun SensorControl(device: DeviceState) {
 }
 
 @Composable
-private fun FanControl(device: DeviceState) {
+private fun FanControl(device: DeviceState, viewModel: DashboardViewModel) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        SwitchControl(device)
-        SliderRow("Скорость", 60, 1, 100, "%")
+        SwitchControl(device, viewModel)
+        SliderRow("Скорость", 60, 1, 100, "%",
+            onValueChangeFinished = { viewModel.onSlider(device, 7, it) })
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("normal", "sleep", "natural", "auto").forEach { mode ->
-                Chip(mode, mode == "normal")
+                Chip(mode, mode == "normal", onClick = { viewModel.onFanMode(device, mode) })
             }
         }
     }
 }
 
 @Composable
-private fun SceneControl(device: DeviceState) {
+private fun SceneControl(device: DeviceState, viewModel: DashboardViewModel) {
     Button(
-        onClick = {},
+        onClick = { viewModel.onAction(device, "activate") },
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp),
@@ -864,9 +884,9 @@ private fun SceneControl(device: DeviceState) {
 }
 
 @Composable
-private fun ButtonControl(device: DeviceState) {
+private fun ButtonControl(device: DeviceState, viewModel: DashboardViewModel) {
     Button(
-        onClick = {},
+        onClick = { viewModel.onAction(device, "press") },
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp),
@@ -878,18 +898,27 @@ private fun ButtonControl(device: DeviceState) {
 }
 
 @Composable
-private fun SliderRow(label: String, value: Int, rangeStart: Int, rangeEnd: Int, unit: String) {
+private fun SliderRow(
+    label: String,
+    value: Int,
+    rangeStart: Int,
+    rangeEnd: Int,
+    unit: String,
+    onValueChangeFinished: ((Float) -> Unit)? = null
+) {
+    var sliderValue by remember { mutableStateOf(value.toFloat()) }
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onBackground)
-            Text("$value$unit", fontSize = 14.sp, color = Gold)
+            Text("${sliderValue.toInt()}$unit", fontSize = 14.sp, color = Gold)
         }
         Slider(
-            value = value.toFloat(),
-            onValueChange = {},
+            value = sliderValue,
+            onValueChange = { sliderValue = it },
+            onValueChangeFinished = { onValueChangeFinished?.invoke(sliderValue) },
             valueRange = rangeStart.toFloat()..rangeEnd.toFloat(),
             colors = androidx.compose.material3.SliderDefaults.colors(
                 thumbColor = Gold,
@@ -901,7 +930,7 @@ private fun SliderRow(label: String, value: Int, rangeStart: Int, rangeEnd: Int,
 }
 
 @Composable
-private fun Chip(text: String, selected: Boolean) {
+private fun Chip(text: String, selected: Boolean, onClick: () -> Unit = {}) {
     val bgColor = if (selected) Gold else MaterialTheme.colorScheme.surfaceVariant
     val textColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
     Text(
@@ -910,6 +939,7 @@ private fun Chip(text: String, selected: Boolean) {
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         color = textColor,
         modifier = Modifier
+            .clickable { onClick() }
             .background(bgColor, RoundedCornerShape(20.dp))
             .padding(horizontal = 14.dp, vertical = 6.dp)
     )

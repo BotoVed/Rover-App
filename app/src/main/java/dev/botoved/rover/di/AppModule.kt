@@ -22,6 +22,6 @@ val appModule = module {
     single { RoverRepository(get()) }
 
     viewModel { OnboardingViewModel(get()) }
-    viewModel { DashboardViewModel(get()) }
+    viewModel { DashboardViewModel(get(), androidContext()) }
     viewModel { MainViewModel(get()) }
 }

@@ -208,6 +208,41 @@ class RnsManager(
         }
     }
 
+    suspend fun sendCmd(destHash: String, serverPkBase64: String, fields: Map<Int, Any>) {
+        val router = lxmRouter ?: run {
+            Log.e(TAG, "sendCmd: LXMRouter not ready"); return
+        }
+        val sourceDest = deliveryDestination ?: run {
+            Log.e(TAG, "sendCmd: no delivery destination"); return
+        }
+        try {
+            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
+            val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
+            val serverDest = Destination.create(
+                identity = serverIdentity,
+                direction = DestinationDirection.OUT,
+                type = DestinationType.SINGLE,
+                appName = "lxmf",
+                aspects = arrayOf("delivery")
+            )
+            val message = LXMessage.create(
+                destination = serverDest,
+                source = sourceDest,
+                title = "",
+                content = "",
+                fields = fields.toMutableMap(),
+                desiredMethod = null
+            )
+            message.failedCallback = {
+                Log.e(TAG, "CMD delivery failed fields=$fields")
+            }
+            router.handleOutbound(message)
+            Log.i(TAG, "CMD sent fields=$fields")
+        } catch (e: Exception) {
+            Log.e(TAG, "sendCmd failed: ${e.message}", e)
+        }
+    }
+
     fun stop() {
         Log.i(TAG, "Stopping RNS stack")
         lxmRouter?.stop()

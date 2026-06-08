@@ -12,11 +12,13 @@ import android.os.IBinder
 import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dev.botoved.rover.data.RoverRepository
+import dev.botoved.rover.data.ServerPreferences
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 
@@ -26,6 +28,29 @@ class RoverService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val rnsManagerReady = CompletableDeferred<RnsManager>()
     private var rnsManager: RnsManager? = null
+
+    private val cmdReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val fieldsJson = intent?.getStringExtra("fields") ?: return
+            serviceScope.launch {
+                val manager = rnsManagerReady.await()
+                val prefs = ServerPreferences(this@RoverService)
+                val dst = prefs.serverDestHash.first() ?: return@launch
+                val pk = prefs.serverPk.first() ?: return@launch
+                try {
+                    val obj = org.json.JSONObject(fieldsJson)
+                    val fields = mutableMapOf<Int, Any>()
+                    obj.keys().forEach { k ->
+                        val intKey = k.toIntOrNull() ?: return@forEach
+                        fields[intKey] = obj.get(k)
+                    }
+                    manager.sendCmd(dst, pk, fields)
+                } catch (e: Exception) {
+                    Log.e(TAG, "ACTION_CMD parse failed: ${e.message}", e)
+                }
+            }
+        }
+    }
 
     private val registerReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -59,9 +84,12 @@ class RoverService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        LocalBroadcastManager.getInstance(this)
-            .registerReceiver(registerReceiver,
+        LocalBroadcastManager.getInstance(this).apply {
+            registerReceiver(registerReceiver,
                 IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
+            registerReceiver(cmdReceiver,
+                IntentFilter("dev.botoved.rover.ACTION_CMD"))
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -158,7 +186,10 @@ class RoverService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "RoverService stopping")
-        LocalBroadcastManager.getInstance(this).unregisterReceiver(registerReceiver)
+        LocalBroadcastManager.getInstance(this).apply {
+            unregisterReceiver(registerReceiver)
+            unregisterReceiver(cmdReceiver)
+        }
         rnsManager?.stop()
         serviceScope.cancel()
         super.onDestroy()

@@ -1,0 +1,1836 @@
+From 8947f5da23e53677ea8b07b929a83094641cea5e Mon Sep 17 00:00:00 2001
+From: BotoVed <50742084+BotoVed@users.noreply.github.com>
+Date: Mon, 8 Jun 2026 18:36:49 +0300
+Subject: [PATCH] feat: Dashboard full UI, STATUS/PUSH wiring, Room+KSP,
+ reactive navigation
+
+---
+ app/build.gradle.kts                          |   4 +-
+ .../java/dev/botoved/rover/MainActivity.kt    |  36 +-
+ .../dev/botoved/rover/data/RoverRepository.kt |  53 +
+ .../botoved/rover/data/db/RoverDatabase.kt    |  70 ++
+ .../java/dev/botoved/rover/di/AppModule.kt    |  15 +
+ .../dev/botoved/rover/service/RoverService.kt |  70 +-
+ .../dev/botoved/rover/ui/MainViewModel.kt     |  30 +
+ .../rover/ui/dashboard/DashboardScreen.kt     | 975 ++++++++++++++++++
+ .../rover/ui/dashboard/DashboardViewModel.kt  | 163 +++
+ .../ui/onboarding/OnboardingViewModel.kt      |   4 +
+ .../java/dev/botoved/rover/ui/theme/Theme.kt  |   1 +
+ build.gradle.kts                              |   1 +
+ gradle/libs.versions.toml                     |   4 +-
+ ...i-logic-center-UI-text-with-fillMaxW.patch | 194 ++++
+ 14 files changed, 1610 insertions(+), 10 deletions(-)
+ create mode 100644 app/src/main/java/dev/botoved/rover/data/RoverRepository.kt
+ create mode 100644 app/src/main/java/dev/botoved/rover/data/db/RoverDatabase.kt
+ create mode 100644 app/src/main/java/dev/botoved/rover/ui/MainViewModel.kt
+ create mode 100644 app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardScreen.kt
+ create mode 100644 app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardViewModel.kt
+ create mode 100644 patches/0001-fix-invert-noWifi-logic-center-UI-text-with-fillMaxW.patch
+
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index a29ca9c..eac6c07 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -1,6 +1,7 @@
+ plugins {
+     alias(libs.plugins.android.application)
+     alias(libs.plugins.kotlin.compose)
++    alias(libs.plugins.ksp)
+ }
+ 
+ android {
+@@ -43,6 +44,7 @@ dependencies {
+     implementation(libs.androidx.ui.graphics)
+     implementation(libs.androidx.ui.tooling.preview)
+     implementation(libs.androidx.material3)
++    implementation("androidx.compose.material:material-icons-extended")
+     implementation(libs.androidx.navigation.compose)
+ 
+     // Koin
+@@ -52,7 +54,7 @@ dependencies {
+     // Room
+     implementation(libs.androidx.room.runtime)
+     implementation(libs.androidx.room.ktx)
+-    annotationProcessor(libs.androidx.room.compiler)
++    ksp(libs.androidx.room.compiler)
+ 
+     // DataStore
+     implementation(libs.androidx.datastore)
+diff --git a/app/src/main/java/dev/botoved/rover/MainActivity.kt b/app/src/main/java/dev/botoved/rover/MainActivity.kt
+index 96f48a2..ccb006f 100644
+--- a/app/src/main/java/dev/botoved/rover/MainActivity.kt
++++ b/app/src/main/java/dev/botoved/rover/MainActivity.kt
+@@ -8,13 +8,31 @@ import android.util.Log
+ import androidx.activity.ComponentActivity
+ import androidx.activity.compose.setContent
+ import androidx.activity.result.contract.ActivityResultContracts
++import androidx.compose.foundation.background
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.ui.Modifier
++import androidx.lifecycle.lifecycleScope
+ import androidx.core.content.ContextCompat
++import dev.botoved.rover.data.ServerPreferences
+ import dev.botoved.rover.service.RoverService
++import dev.botoved.rover.ui.AppDestination
++import dev.botoved.rover.ui.MainViewModel
++import dev.botoved.rover.ui.dashboard.DashboardScreen
+ import dev.botoved.rover.ui.onboarding.OnboardingScreen
+ import dev.botoved.rover.ui.theme.RoverTheme
++import kotlinx.coroutines.launch
++import org.koin.android.ext.android.inject
++import org.koin.androidx.viewmodel.ext.android.viewModel as koinViewModel
+ 
+ class MainActivity : ComponentActivity() {
+ 
++    private val mainViewModel: MainViewModel by koinViewModel()
++    private val prefs: ServerPreferences by inject()
++
+     private val permissionLauncher = registerForActivityResult(
+         ActivityResultContracts.RequestMultiplePermissions()
+     ) { permissions ->
+@@ -45,9 +63,21 @@ class MainActivity : ComponentActivity() {
+         )
+         setContent {
+             RoverTheme {
+-                OnboardingScreen(onRegistered = {
+-                    // TODO Task 4: переход на Dashboard
+-                })
++                val destination by mainViewModel.destination.collectAsState()
++                when (destination) {
++                    is AppDestination.Splash -> {
++                        Box(modifier = Modifier.fillMaxSize()
++                            .background(MaterialTheme.colorScheme.background))
++                    }
++                    is AppDestination.Onboarding -> {
++                        OnboardingScreen(onRegistered = {
++                            lifecycleScope.launch { prefs.setApproved() }
++                        })
++                    }
++                    is AppDestination.Dashboard -> {
++                        DashboardScreen()
++                    }
++                }
+             }
+         }
+     }
+diff --git a/app/src/main/java/dev/botoved/rover/data/RoverRepository.kt b/app/src/main/java/dev/botoved/rover/data/RoverRepository.kt
+new file mode 100644
+index 0000000..202eae4
+--- /dev/null
++++ b/app/src/main/java/dev/botoved/rover/data/RoverRepository.kt
+@@ -0,0 +1,53 @@
++package dev.botoved.rover.data
++
++import android.util.Log
++import dev.botoved.rover.data.db.*
++import kotlinx.coroutines.flow.Flow
++
++class RoverRepository(private val db: RoverDatabase) {
++
++    private val TAG = "Rover"
++
++    fun observeAreas(): Flow<List<AreaEntity>> = db.areaDao().observeAll()
++    fun observeDevices(): Flow<List<DeviceEntity>> = db.deviceDao().observeAll()
++    fun observeMeta(): Flow<ServerMetaEntity?> = db.serverMetaDao().observe()
++
++    suspend fun saveMeta(fields: Map<*, *>) {
++        val data = fields[3] as? Map<*, *> ?: return
++        val meta = ServerMetaEntity(
++            serverName = (data["server_name"] as? String) ?: "Rover Hub",
++            version = (data["version"] as? String) ?: "",
++            brand = (data["brand"] as? String) ?: "Rover"
++        )
++        db.serverMetaDao().insert(meta)
++        Log.i(TAG, "DB: meta saved name=${meta.serverName}")
++    }
++
++    suspend fun saveAreas(fields: Map<*, *>) {
++        val list = fields[3] as? List<*> ?: return
++        val entities = list.mapNotNull { item ->
++            val m = item as? Map<*, *> ?: return@mapNotNull null
++            val id = (m["id"] as? Number)?.toInt() ?: return@mapNotNull null
++            val name = (m["name"] as? String) ?: return@mapNotNull null
++            AreaEntity(id = id, name = name)
++        }
++        db.areaDao().deleteAll()
++        db.areaDao().insertAll(entities)
++        Log.i(TAG, "DB: ${entities.size} areas saved")
++    }
++
++    suspend fun saveDevices(fields: Map<*, *>) {
++        val list = fields[3] as? List<*> ?: return
++        val entities = list.mapNotNull { item ->
++            val m = item as? Map<*, *> ?: return@mapNotNull null
++            val id = (m["id"] as? Number)?.toInt() ?: return@mapNotNull null
++            val name = (m["n"] as? String) ?: return@mapNotNull null
++            val type = (m["t"] as? String) ?: return@mapNotNull null
++            val areaId = (m["a"] as? Number)?.toInt()
++            DeviceEntity(shortId = id, name = name, type = type, areaId = areaId)
++        }
++        db.deviceDao().deleteAll()
++        db.deviceDao().insertAll(entities)
++        Log.i(TAG, "DB: ${entities.size} devices saved")
++    }
++}
+diff --git a/app/src/main/java/dev/botoved/rover/data/db/RoverDatabase.kt b/app/src/main/java/dev/botoved/rover/data/db/RoverDatabase.kt
+new file mode 100644
+index 0000000..b632693
+--- /dev/null
++++ b/app/src/main/java/dev/botoved/rover/data/db/RoverDatabase.kt
+@@ -0,0 +1,70 @@
++package dev.botoved.rover.data.db
++
++import androidx.room.*
++import kotlinx.coroutines.flow.Flow
++
++@Entity(tableName = "areas")
++data class AreaEntity(
++    @PrimaryKey val id: Int,
++    val name: String
++)
++
++@Entity(tableName = "devices")
++data class DeviceEntity(
++    @PrimaryKey val shortId: Int,
++    val name: String,
++    val type: String,
++    val areaId: Int?
++)
++
++@Entity(tableName = "server_meta")
++data class ServerMetaEntity(
++    @PrimaryKey val id: Int = 1,
++    val serverName: String,
++    val version: String,
++    val brand: String
++)
++
++@Dao
++interface AreaDao {
++    @Query("SELECT * FROM areas ORDER BY name ASC")
++    fun observeAll(): Flow<List<AreaEntity>>
++
++    @Insert(onConflict = OnConflictStrategy.REPLACE)
++    suspend fun insertAll(areas: List<AreaEntity>)
++
++    @Query("DELETE FROM areas")
++    suspend fun deleteAll()
++}
++
++@Dao
++interface DeviceDao {
++    @Query("SELECT * FROM devices ORDER BY name ASC")
++    fun observeAll(): Flow<List<DeviceEntity>>
++
++    @Insert(onConflict = OnConflictStrategy.REPLACE)
++    suspend fun insertAll(devices: List<DeviceEntity>)
++
++    @Query("DELETE FROM devices")
++    suspend fun deleteAll()
++}
++
++@Dao
++interface ServerMetaDao {
++    @Query("SELECT * FROM server_meta WHERE id = 1")
++    fun observe(): Flow<ServerMetaEntity?>
++
++    @Insert(onConflict = OnConflictStrategy.REPLACE)
++    suspend fun insert(meta: ServerMetaEntity)
++}
++
++@Database(
++    entities = [AreaEntity::class, DeviceEntity::class, ServerMetaEntity::class],
++    version = 1,
++    exportSchema = false
++)
++abstract class RoverDatabase : RoomDatabase() {
++    abstract fun areaDao(): AreaDao
++    abstract fun deviceDao(): DeviceDao
++    abstract fun serverMetaDao(): ServerMetaDao
++}
+diff --git a/app/src/main/java/dev/botoved/rover/di/AppModule.kt b/app/src/main/java/dev/botoved/rover/di/AppModule.kt
+index 24b727d..44cd73b 100644
+--- a/app/src/main/java/dev/botoved/rover/di/AppModule.kt
++++ b/app/src/main/java/dev/botoved/rover/di/AppModule.kt
+@@ -1,6 +1,11 @@
+ package dev.botoved.rover.di
+ 
++import androidx.room.Room
++import dev.botoved.rover.data.RoverRepository
+ import dev.botoved.rover.data.ServerPreferences
++import dev.botoved.rover.data.db.RoverDatabase
++import dev.botoved.rover.ui.MainViewModel
++import dev.botoved.rover.ui.dashboard.DashboardViewModel
+ import dev.botoved.rover.ui.onboarding.OnboardingViewModel
+ import org.koin.android.ext.koin.androidContext
+ import org.koin.androidx.viewmodel.dsl.viewModel
+@@ -8,5 +13,15 @@ import org.koin.dsl.module
+ 
+ val appModule = module {
+     single { ServerPreferences(androidContext()) }
++
++    single {
++        Room.databaseBuilder(androidContext(), RoverDatabase::class.java, "rover.db")
++            .fallbackToDestructiveMigration()
++            .build()
++    }
++    single { RoverRepository(get()) }
++
+     viewModel { OnboardingViewModel(get()) }
++    viewModel { DashboardViewModel(get()) }
++    viewModel { MainViewModel(get()) }
+ }
+diff --git a/app/src/main/java/dev/botoved/rover/service/RoverService.kt b/app/src/main/java/dev/botoved/rover/service/RoverService.kt
+index 2241e07..b98d3d9 100644
+--- a/app/src/main/java/dev/botoved/rover/service/RoverService.kt
++++ b/app/src/main/java/dev/botoved/rover/service/RoverService.kt
+@@ -11,15 +11,18 @@ import android.content.IntentFilter
+ import android.os.IBinder
+ import android.util.Log
+ import androidx.localbroadcastmanager.content.LocalBroadcastManager
++import dev.botoved.rover.data.RoverRepository
+ import kotlinx.coroutines.CompletableDeferred
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.SupervisorJob
+ import kotlinx.coroutines.cancel
+ import kotlinx.coroutines.launch
++import org.koin.android.ext.android.inject
+ 
+ class RoverService : Service() {
+ 
++    private val repository: RoverRepository by inject()
+     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+     private val rnsManagerReady = CompletableDeferred<RnsManager>()
+     private var rnsManager: RnsManager? = null
+@@ -72,13 +75,70 @@ class RoverService : Service() {
+ 
+                 val manager = RnsManager(applicationContext, serviceScope)
+                 manager.onConfigReceived = { fields ->
+-                    Log.i(TAG, "CONFIG received, notifying UI")
+-                    val cfgIntent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+-                    LocalBroadcastManager.getInstance(this@RoverService)
+-                        .sendBroadcast(cfgIntent)
++                    val section = fields?.get(1) as? String
++                    val data = fields?.get(3)
++                    Log.i(TAG, "CONFIG section=$section dataType=${data?.javaClass?.simpleName}")
++                    if (data != null) Log.i(TAG, "CONFIG data preview=${
++                        if (data is List<*>) "list(${data.size})"
++                        else if (data is Map<*, *>) "map(${data.size} keys)"
++                        else data.toString().take(100)
++                    }")
++                    serviceScope.launch {
++                        when (section) {
++                            "m" -> repository.saveMeta(fields ?: emptyMap<Any, Any>())
++                            "a" -> repository.saveAreas(fields ?: emptyMap<Any, Any>())
++                            "d" -> repository.saveDevices(fields ?: emptyMap<Any, Any>())
++                        }
++                    }
++                    if (section == "d") {
++                        val cfgIntent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
++                        LocalBroadcastManager.getInstance(this@RoverService)
++                            .sendBroadcast(cfgIntent)
++                    }
+                 }
+                 manager.onMessageReceived = { message ->
+-                    Log.i(TAG, "Message received: $message")
++                    val fields = message.fields
++                    val tp = (fields?.get(0) as? Number)?.toInt()
++                    when (tp) {
++                        2 -> {
++                            val states = fields?.get(2) as? List<*>
++                            if (states != null) {
++                                if (states.isNotEmpty()) {
++                                    val first = states.firstOrNull() as? Map<*, *>
++                                    if (first != null) {
++                                        val keyTypes = first.keys.joinToString { "${it}(${it?.javaClass?.simpleName})" }
++                                        Log.i(TAG, "STATUS first device key types: $keyTypes")
++                                    }
++                                }
++                                val intent = Intent("dev.botoved.rover.ACTION_STATUS").apply {
++                                    val arr = org.json.JSONArray()
++                                    states.filterIsInstance<Map<*, *>>().forEach { s ->
++                                        val obj = org.json.JSONObject()
++                                        s.forEach { (k, v) -> obj.put(k.toString(), v) }
++                                        arr.put(obj)
++                                    }
++                                    putExtra("states", arr.toString())
++                                }
++                                LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
++                                Log.i(TAG, "STATUS broadcast: ${states.size} devices")
++                            }
++                        }
++                        3 -> {
++                            val keyTypes = fields?.keys?.joinToString { "${it}(${it?.javaClass?.simpleName})" }
++                            Log.i(TAG, "PUSH keys: $keyTypes")
++                            val intent = Intent("dev.botoved.rover.ACTION_PUSH").apply {
++                                val obj = org.json.JSONObject()
++                                fields?.forEach { (k, v) -> obj.put(k.toString(), v) }
++                                putExtra("fields", obj.toString())
++                            }
++                            LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
++                            Log.i(TAG, "PUSH broadcast id=${fields?.get(9)}")
++                        }
++                        6 -> {
++                            Log.i(TAG, "PING/PONG received — link alive")
++                        }
++                        else -> Log.i(TAG, "Message tp=$tp — unhandled")
++                    }
+                 }
+                 manager.start(identity)
+                 rnsManager = manager
+diff --git a/app/src/main/java/dev/botoved/rover/ui/MainViewModel.kt b/app/src/main/java/dev/botoved/rover/ui/MainViewModel.kt
+new file mode 100644
+index 0000000..0b3030b
+--- /dev/null
++++ b/app/src/main/java/dev/botoved/rover/ui/MainViewModel.kt
+@@ -0,0 +1,30 @@
++package dev.botoved.rover.ui
++
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import dev.botoved.rover.data.ServerPreferences
++import kotlinx.coroutines.flow.*
++
++sealed class AppDestination {
++    object Splash : AppDestination()
++    object Onboarding : AppDestination()
++    object Dashboard : AppDestination()
++}
++
++class MainViewModel(
++    private val prefs: ServerPreferences
++) : ViewModel() {
++
++    val destination: StateFlow<AppDestination> = prefs.isRegistered
++        .map { status ->
++            when (status) {
++                "approved" -> AppDestination.Dashboard
++                else -> AppDestination.Onboarding
++            }
++        }
++        .stateIn(
++            scope = viewModelScope,
++            started = SharingStarted.WhileSubscribed(5_000),
++            initialValue = AppDestination.Splash
++        )
++}
+diff --git a/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardScreen.kt b/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardScreen.kt
+new file mode 100644
+index 0000000..e0853c9
+--- /dev/null
++++ b/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardScreen.kt
+@@ -0,0 +1,975 @@
++package dev.botoved.rover.ui.dashboard
++
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.content.IntentFilter
++import androidx.compose.animation.AnimatedVisibility
++import androidx.compose.animation.core.InfiniteTransition
++import androidx.compose.animation.core.RepeatMode
++import androidx.compose.animation.core.animateFloat
++import androidx.compose.animation.core.infiniteRepeatable
++import androidx.compose.animation.core.rememberInfiniteTransition
++import androidx.compose.animation.core.tween
++import androidx.compose.animation.expandVertically
++import androidx.compose.animation.shrinkVertically
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.width
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.lazy.items
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.AcUnit
++import androidx.compose.material.icons.filled.Air
++import androidx.compose.material.icons.filled.Bathtub
++import androidx.compose.material.icons.filled.Bed
++import androidx.compose.material.icons.filled.Blinds
++import androidx.compose.material.icons.filled.Bluetooth
++import androidx.compose.material.icons.filled.Build
++import androidx.compose.material.icons.filled.ChildCare
++import androidx.compose.material.icons.filled.ChevronRight
++import androidx.compose.material.icons.filled.Home
++import androidx.compose.material.icons.filled.Kitchen
++import androidx.compose.material.icons.filled.Lightbulb
++import androidx.compose.material.icons.filled.Lock
++import androidx.compose.material.icons.filled.Movie
++import androidx.compose.material.icons.filled.Park
++import androidx.compose.material.icons.filled.PlayArrow
++import androidx.compose.material.icons.filled.Power
++import androidx.compose.material.icons.filled.Room
++import androidx.compose.material.icons.filled.Security
++import androidx.compose.material.icons.filled.Sensors
++import androidx.compose.material.icons.filled.Settings
++import androidx.compose.material.icons.filled.TouchApp
++import androidx.compose.material3.Button
++import androidx.compose.material3.ButtonDefaults
++import androidx.compose.material3.Card
++import androidx.compose.material3.CardDefaults
++import androidx.compose.material3.CircularProgressIndicator
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.FilledTonalButton
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.ModalBottomSheet
++import androidx.compose.material3.NavigationBar
++import androidx.compose.material3.NavigationBarItem
++import androidx.compose.material3.NavigationBarItemDefaults
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Slider
++import androidx.compose.material3.Switch
++import androidx.compose.material3.Text
++import androidx.compose.material3.TopAppBar
++import androidx.compose.material3.TopAppBarDefaults
++import androidx.compose.material3.rememberModalBottomSheetState
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.DisposableEffect
++import androidx.compose.runtime.collectAsState
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableIntStateOf
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.alpha
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.graphicsLayer
++import androidx.compose.ui.graphics.vector.ImageVector
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.text.font.FontWeight
++import androidx.compose.ui.text.style.TextAlign
++import androidx.compose.ui.text.style.TextOverflow
++import androidx.compose.ui.unit.dp
++import androidx.compose.ui.unit.sp
++import androidx.localbroadcastmanager.content.LocalBroadcastManager
++import dev.botoved.rover.data.ServerPreferences
++import org.json.JSONArray
++import org.json.JSONObject
++import org.koin.androidx.compose.koinViewModel
++import org.koin.compose.koinInject
++
++private val Gold = Color(0xFFC9A84C)
++private val GoldAlpha = Color(0x33C9A84C)
++private val Red = Color(0xFFEF5350)
++private val Green = Color(0xFF66BB6A)
++private val ShimmerBase = Color(0xFF333333)
++private val ShimmerHighlight = Color(0xFF444444)
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++fun DashboardScreen(
++    viewModel: DashboardViewModel = koinViewModel(),
++    prefs: ServerPreferences = koinInject()
++) {
++    val uiState by viewModel.uiState.collectAsState()
++    val destHash by prefs.serverDestHash.collectAsState(initial = null)
++    var selectedTab by remember { mutableIntStateOf(0) }
++    var sheetDevice by remember { mutableStateOf<DeviceState?>(null) }
++    val context = LocalContext.current
++
++    DisposableEffect(Unit) {
++        val statusReceiver = object : BroadcastReceiver() {
++            override fun onReceive(ctx: Context?, intent: Intent?) {
++                val json = intent?.getStringExtra("states") ?: return
++                try {
++                    val arr = JSONArray(json)
++                    val list = (0 until arr.length()).map { i ->
++                        val obj = arr.getJSONObject(i)
++                        obj.keys().asSequence().associateWith { k -> obj.get(k) }
++                    }
++                    viewModel.onStatusReceived(list)
++                } catch (_: Exception) {}
++            }
++        }
++        val pushReceiver = object : BroadcastReceiver() {
++            override fun onReceive(ctx: Context?, intent: Intent?) {
++                val json = intent?.getStringExtra("fields") ?: return
++                try {
++                    val obj = JSONObject(json)
++                    val map = obj.keys().asSequence().associateWith { k -> obj.get(k) }
++                    viewModel.onPushReceived(map)
++                } catch (_: Exception) {}
++            }
++        }
++        LocalBroadcastManager.getInstance(context).apply {
++            registerReceiver(statusReceiver, IntentFilter("dev.botoved.rover.ACTION_STATUS"))
++            registerReceiver(pushReceiver, IntentFilter("dev.botoved.rover.ACTION_PUSH"))
++        }
++        onDispose {
++            LocalBroadcastManager.getInstance(context).apply {
++                unregisterReceiver(statusReceiver)
++                unregisterReceiver(pushReceiver)
++            }
++        }
++    }
++
++    ModalBottomSheetHost(
++        sheetDevice = sheetDevice,
++        onDismissSheet = { sheetDevice = null }
++    ) {
++        Scaffold(
++            topBar = {
++                DashboardTopBar(
++                    serverName = uiState.serverName,
++                    isOnline = uiState.isOnline,
++                    destHash = destHash
++                )
++            },
++            bottomBar = {
++                DashboardBottomNav(
++                    selectedTab = selectedTab,
++                    onTabChange = { selectedTab = it }
++                )
++            },
++            containerColor = MaterialTheme.colorScheme.background
++        ) { padding ->
++            Box(
++                modifier = Modifier
++                    .fillMaxSize()
++                    .padding(padding)
++            ) {
++                when {
++                    uiState.isLoading -> SkeletonContent()
++                    selectedTab == 0 -> {
++                        LazyColumn(
++                            modifier = Modifier.fillMaxSize(),
++                            verticalArrangement = Arrangement.spacedBy(12.dp),
++                            contentPadding = androidx.compose.foundation.layout.PaddingValues(
++                                horizontal = 16.dp, vertical = 12.dp
++                            )
++                        ) {
++                            items(uiState.zones, key = { it.areaId ?: -1 }) { zone ->
++                                ZoneSection(
++                                    zone = zone,
++                                    onToggle = { viewModel.onZoneExpandToggle(zone.areaId) },
++                                    onDeviceClick = { sheetDevice = it }
++                                )
++                            }
++                        }
++                    }
++                    else -> {
++                        Box(
++                            modifier = Modifier.fillMaxSize(),
++                            contentAlignment = Alignment.Center
++                        ) {
++                            Text(
++                                "Настройки",
++                                color = MaterialTheme.colorScheme.onSurfaceVariant,
++                                fontSize = 16.sp
++                            )
++                        }
++                    }
++                }
++            }
++        }
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++private fun DashboardTopBar(
++    serverName: String,
++    isOnline: Boolean,
++    destHash: String?
++) {
++    TopAppBar(
++        title = {
++            Column {
++                Text(
++                    serverName.ifEmpty { "Rover" },
++                    fontSize = 18.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = MaterialTheme.colorScheme.onBackground,
++                    maxLines = 1,
++                    overflow = TextOverflow.Ellipsis
++                )
++                Text(
++                    "Rover · ${(destHash ?: "").take(8)}",
++                    fontSize = 11.sp,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant,
++                    maxLines = 1,
++                    overflow = TextOverflow.Ellipsis
++                )
++            }
++        },
++        actions = {
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                Box(
++                    modifier = Modifier
++                        .size(8.dp)
++                        .background(
++                            if (isOnline) Green else Red,
++                            CircleShape
++                        )
++                )
++                Spacer(Modifier.width(4.dp))
++                Text(
++                    if (isOnline) "онлайн" else "офлайн",
++                    fontSize = 11.sp,
++                    color = if (isOnline) Green else Red
++                )
++                Spacer(Modifier.width(4.dp))
++            }
++        },
++        colors = TopAppBarDefaults.topAppBarColors(
++            containerColor = MaterialTheme.colorScheme.background,
++            titleContentColor = MaterialTheme.colorScheme.onBackground
++        )
++    )
++}
++
++@Composable
++private fun DashboardBottomNav(
++    selectedTab: Int,
++    onTabChange: (Int) -> Unit
++) {
++    NavigationBar(
++        containerColor = MaterialTheme.colorScheme.surface
++    ) {
++        NavigationBarItem(
++            selected = selectedTab == 0,
++            onClick = { onTabChange(0) },
++            icon = { Icon(Icons.Default.Home, contentDescription = "Дом") },
++            label = { Text("дом") },
++            colors = NavigationBarItemDefaults.colors(
++                selectedIconColor = Gold,
++                selectedTextColor = Gold,
++                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                indicatorColor = GoldAlpha
++            )
++        )
++        NavigationBarItem(
++            selected = selectedTab == 1,
++            onClick = { onTabChange(1) },
++            icon = { Icon(Icons.Default.Settings, contentDescription = "Настройки") },
++            label = { Text("настройки") },
++            colors = NavigationBarItemDefaults.colors(
++                selectedIconColor = Gold,
++                selectedTextColor = Gold,
++                unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                indicatorColor = GoldAlpha
++            )
++        )
++    }
++}
++
++@Composable
++private fun SkeletonContent() {
++    val infiniteTransition = rememberInfiniteTransition()
++    val alpha by infiniteTransition.animateFloat(
++        initialValue = 0.3f,
++        targetValue = 0.7f,
++        animationSpec = infiniteRepeatable(
++            animation = tween(durationMillis = 1000),
++            repeatMode = RepeatMode.Reverse
++        )
++    )
++    val shimmerColor = ShimmerBase.copy(alpha = alpha)
++
++    LazyColumn(
++        modifier = Modifier.fillMaxSize(),
++        verticalArrangement = Arrangement.spacedBy(16.dp),
++        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp)
++    ) {
++        items(2) {
++            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++                Box(
++                    modifier = Modifier
++                        .fillMaxWidth()
++                        .height(20.dp)
++                        .background(shimmerColor, RoundedCornerShape(4.dp))
++                )
++                repeat(3) {
++                    Box(
++                        modifier = Modifier
++                            .fillMaxWidth()
++                            .height(72.dp)
++                            .background(shimmerColor, RoundedCornerShape(12.dp))
++                    )
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun ZoneSection(
++    zone: ZoneUiState,
++    onToggle: () -> Unit,
++    onDeviceClick: (DeviceState) -> Unit
++) {
++    val activeCount = zone.devices.count { it.isOn == true }
++    val hasAlarm = zone.devices.any { it.type == "AL" && (it.isOn == true || it.primaryValue != null) }
++
++    Column {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .clickable { onToggle() }
++                .padding(vertical = 4.dp),
++            verticalAlignment = Alignment.CenterVertically
++        ) {
++            Box(
++                modifier = Modifier
++                    .size(36.dp)
++                    .background(
++                        MaterialTheme.colorScheme.surfaceVariant,
++                        RoundedCornerShape(10.dp)
++                    ),
++                contentAlignment = Alignment.Center
++            ) {
++                Icon(
++                    zoneIcon(zone.areaName),
++                    contentDescription = null,
++                    tint = Gold,
++                    modifier = Modifier.size(20.dp)
++                )
++            }
++            Spacer(Modifier.width(12.dp))
++            Text(
++                zone.areaName,
++                fontSize = 16.sp,
++                fontWeight = FontWeight.Medium,
++                color = MaterialTheme.colorScheme.onBackground,
++                modifier = Modifier.weight(1f)
++            )
++            if (activeCount > 0) {
++                Text(
++                    "$activeCount вкл",
++                    fontSize = 12.sp,
++                    color = Gold,
++                    modifier = Modifier.padding(end = 8.dp)
++                )
++            }
++            if (hasAlarm) {
++                Text(
++                    "⚠",
++                    fontSize = 14.sp,
++                    modifier = Modifier.padding(end = 8.dp)
++                )
++            }
++            Icon(
++                Icons.Default.ChevronRight,
++                contentDescription = null,
++                tint = MaterialTheme.colorScheme.onSurfaceVariant,
++                modifier = Modifier.graphicsLayer {
++                    rotationZ = if (zone.isExpanded) 90f else 0f
++                }
++            )
++        }
++
++        AnimatedVisibility(
++            visible = zone.isExpanded,
++            enter = expandVertically(),
++            exit = shrinkVertically()
++        ) {
++            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
++                val grouped = zone.devices.groupBy { deviceTypeGroup(it.type) }
++                grouped.forEach { (groupLabel, devices) ->
++                    Text(
++                        groupLabel,
++                        fontSize = 11.sp,
++                        fontWeight = FontWeight.Medium,
++                        color = MaterialTheme.colorScheme.onSurfaceVariant,
++                        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp, start = 4.dp)
++                    )
++                    devices.forEach { device ->
++                        DeviceCard(
++                            device = device,
++                            onClick = { onDeviceClick(device) }
++                        )
++                    }
++                }
++            }
++        }
++    }
++}
++
++@Composable
++private fun DeviceCard(
++    device: DeviceState,
++    onClick: () -> Unit
++) {
++    val isActive = device.isOn == true
++    val borderColor = if (isActive) Gold else MaterialTheme.colorScheme.surfaceVariant
++
++    Card(
++        modifier = Modifier
++            .fillMaxWidth()
++            .alpha(if (device.isPending) 0.6f else 1f)
++            .clickable { onClick() },
++        shape = RoundedCornerShape(12.dp),
++        colors = CardDefaults.cardColors(
++            containerColor = MaterialTheme.colorScheme.surface
++        ),
++        border = androidx.compose.foundation.BorderStroke(1.dp, borderColor)
++    ) {
++        Box {
++            Row(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .padding(horizontal = 12.dp, vertical = 10.dp),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Icon(
++                    deviceIcon(device.type),
++                    contentDescription = null,
++                    tint = if (isActive) Gold else MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.size(24.dp)
++                )
++                Spacer(Modifier.width(12.dp))
++                Column(modifier = Modifier.weight(1f)) {
++                    Text(
++                        device.name,
++                        fontSize = 14.sp,
++                        fontWeight = FontWeight.Medium,
++                        color = MaterialTheme.colorScheme.onBackground,
++                        maxLines = 1,
++                        overflow = TextOverflow.Ellipsis
++                    )
++                    if (device.primaryValue != null) {
++                        Text(
++                            device.primaryValue,
++                            fontSize = 12.sp,
++                            color = if (isActive) Gold else MaterialTheme.colorScheme.onSurfaceVariant,
++                            maxLines = 1
++                        )
++                    }
++                }
++                Spacer(Modifier.width(8.dp))
++                DeviceRightControl(device)
++            }
++            if (device.isPending) {
++                Box(
++                    modifier = Modifier
++                        .align(Alignment.TopEnd)
++                        .padding(4.dp)
++                        .size(8.dp)
++                        .background(Gold, CircleShape)
++                )
++            }
++        }
++    }
++}
++
++@Composable
++private fun DeviceRightControl(device: DeviceState) {
++    when (device.type) {
++        "SW", "LT", "FN", "CL" -> {
++            val isOn = device.isOn == true
++            Switch(
++                checked = isOn,
++                onCheckedChange = null,
++                colors = androidx.compose.material3.SwitchDefaults.colors(
++                    checkedThumbColor = Gold,
++                    checkedTrackColor = GoldAlpha,
++                    uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,
++                    uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
++                )
++            )
++        }
++        "LK" -> {
++            val label = if (device.isOn == true) "открыт" else if (device.isOn == false) "закрыт" else ""
++            if (label.isNotEmpty()) {
++                Text(
++                    label,
++                    fontSize = 12.sp,
++                    color = if (device.isOn == true) Green else MaterialTheme.colorScheme.onSurfaceVariant,
++                    fontWeight = FontWeight.Medium
++                )
++            }
++        }
++        "SE", "CV" -> {
++            if (device.primaryValue != null) {
++                Text(
++                    device.primaryValue,
++                    fontSize = 13.sp,
++                    color = Gold,
++                    fontWeight = FontWeight.SemiBold
++                )
++            }
++        }
++        "MS" -> {
++            if (device.primaryValue != null) {
++                Text(
++                    device.primaryValue,
++                    fontSize = 12.sp,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++            }
++        }
++        "AL" -> {
++            val label = when (device.isOn) {
++                true -> "тревога"
++                false -> "охрана"
++                else -> null
++            }
++            if (label != null) {
++                Text(
++                    label,
++                    fontSize = 12.sp,
++                    color = if (device.isOn == true) Red else Green,
++                    fontWeight = FontWeight.Medium
++                )
++            }
++        }
++    }
++}
++
++@OptIn(ExperimentalMaterial3Api::class)
++@Composable
++private fun ModalBottomSheetHost(
++    sheetDevice: DeviceState?,
++    onDismissSheet: () -> Unit,
++    content: @Composable () -> Unit
++) {
++    if (sheetDevice != null) {
++        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
++        ModalBottomSheet(
++            onDismissRequest = onDismissSheet,
++            sheetState = sheetState,
++            containerColor = MaterialTheme.colorScheme.surface,
++            shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
++        ) {
++            DeviceDetailSheetContent(device = sheetDevice, onClose = onDismissSheet)
++        }
++    }
++    content()
++}
++
++@Composable
++private fun DeviceDetailSheetContent(
++    device: DeviceState,
++    onClose: () -> Unit
++) {
++    val isActive = device.isOn == true
++    Column(
++        modifier = Modifier
++            .fillMaxWidth()
++            .padding(horizontal = 24.dp, vertical = 16.dp)
++            .padding(bottom = 32.dp),
++        verticalArrangement = Arrangement.spacedBy(20.dp)
++    ) {
++        Row(verticalAlignment = Alignment.CenterVertically) {
++            Icon(
++                deviceIcon(device.type),
++                contentDescription = null,
++                tint = if (isActive) Gold else MaterialTheme.colorScheme.onSurfaceVariant,
++                modifier = Modifier.size(32.dp)
++            )
++            Spacer(Modifier.width(12.dp))
++            Column {
++                Text(
++                    device.name,
++                    fontSize = 18.sp,
++                    fontWeight = FontWeight.SemiBold,
++                    color = MaterialTheme.colorScheme.onBackground
++                )
++                Text(
++                    deviceTypeLabel(device.type),
++                    fontSize = 12.sp,
++                    color = MaterialTheme.colorScheme.onSurfaceVariant
++                )
++            }
++        }
++
++        when (device.type) {
++            "SW" -> SwitchControl(device)
++            "LT" -> LightControl(device)
++            "CV" -> CoverControl(device)
++            "CL" -> ClimateControl(device)
++            "LK" -> LockControl(device)
++            "MS" -> MediaControl(device)
++            "AL" -> AlarmControl(device)
++            "SE" -> SensorControl(device)
++            "FN" -> FanControl(device)
++            "SC" -> SceneControl(device)
++            "BT" -> ButtonControl(device)
++        }
++
++        Button(
++            onClick = onClose,
++            modifier = Modifier.fillMaxWidth(),
++            colors = ButtonDefaults.buttonColors(
++                containerColor = Gold,
++                contentColor = MaterialTheme.colorScheme.onPrimary
++            ),
++            shape = RoundedCornerShape(12.dp)
++        ) {
++            Text("Закрыть")
++        }
++    }
++}
++
++@Composable
++private fun SwitchControl(device: DeviceState) {
++    Row(
++        modifier = Modifier.fillMaxWidth(),
++        horizontalArrangement = Arrangement.SpaceBetween,
++        verticalAlignment = Alignment.CenterVertically
++    ) {
++        Text("Включить", color = MaterialTheme.colorScheme.onBackground, fontSize = 16.sp)
++        Switch(
++            checked = device.isOn == true,
++            onCheckedChange = null,
++            colors = androidx.compose.material3.SwitchDefaults.colors(
++                checkedThumbColor = Gold,
++                checkedTrackColor = GoldAlpha
++            )
++        )
++    }
++}
++
++@Composable
++private fun LightControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
++        SwitchControl(device)
++        SliderRow("Яркость", 75, 0, 100, "%")
++        SliderRow("Цвет. температура", 4200, 2700, 6500, "K")
++    }
++}
++
++@Composable
++private fun CoverControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.spacedBy(8.dp)
++        ) {
++            Button(
++                onClick = {},
++                modifier = Modifier.weight(1f),
++                colors = ButtonDefaults.buttonColors(containerColor = Gold),
++                shape = RoundedCornerShape(10.dp)
++            ) { Text("Открыть") }
++            FilledTonalButton(
++                onClick = {},
++                modifier = Modifier.weight(1f),
++                shape = RoundedCornerShape(10.dp)
++            ) { Text("Стоп") }
++            Button(
++                onClick = {},
++                modifier = Modifier.weight(1f),
++                colors = ButtonDefaults.buttonColors(containerColor = Red),
++                shape = RoundedCornerShape(10.dp)
++            ) { Text("Закрыть", color = Color.White) }
++        }
++        SliderRow("Позиция", 50, 0, 100, "%")
++    }
++}
++
++@Composable
++private fun ClimateControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
++        SwitchControl(device)
++        SliderRow("Температура", 22, 16, 30, "°C")
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            listOf("cool", "heat", "fan_only", "auto", "dry").forEach { mode ->
++                Chip(mode, mode == "cool")
++            }
++        }
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            listOf("low", "mid", "high", "auto").forEach { speed ->
++                Chip(speed, speed == "auto")
++            }
++        }
++    }
++}
++
++@Composable
++private fun LockControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.spacedBy(8.dp)
++        ) {
++            Button(
++                onClick = {},
++                modifier = Modifier.weight(1f),
++                colors = ButtonDefaults.buttonColors(containerColor = Gold),
++                shape = RoundedCornerShape(10.dp)
++            ) { Text("Открыть") }
++            Button(
++                onClick = {},
++                modifier = Modifier.weight(1f),
++                colors = ButtonDefaults.buttonColors(containerColor = Red),
++                shape = RoundedCornerShape(10.dp)
++            ) { Text("Закрыть", color = Color.White) }
++        }
++        val stateLabel = when (device.isOn) {
++            true -> "Открыто"
++            false -> "Закрыто"
++            else -> "Неизвестно"
++        }
++        Row {
++            Text("Состояние: ", color = MaterialTheme.colorScheme.onSurfaceVariant)
++            Text(stateLabel, color = MaterialTheme.colorScheme.onBackground,
++                fontWeight = FontWeight.Medium)
++        }
++    }
++}
++
++@Composable
++private fun MediaControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.SpaceEvenly
++        ) {
++            IconButton(onClick = {}) {
++                Icon(Icons.Default.ChevronRight,
++                    contentDescription = "Назад",
++                    tint = MaterialTheme.colorScheme.onBackground,
++                    modifier = Modifier.graphicsLayer { rotationZ = 180f }
++                )
++            }
++            IconButton(onClick = {}) {
++                Icon(Icons.Default.PlayArrow,
++                    contentDescription = "Воспроизвести",
++                    tint = Gold,
++                    modifier = Modifier.size(40.dp)
++                )
++            }
++            IconButton(onClick = {}) {
++                Icon(Icons.Default.ChevronRight,
++                    contentDescription = "Далее",
++                    tint = MaterialTheme.colorScheme.onBackground
++                )
++            }
++        }
++        SliderRow("Громкость", 50, 0, 100, "%")
++    }
++}
++
++@Composable
++private fun AlarmControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
++        listOf("armed_away" to "Полная", "armed_home" to "Дома", "armed_night" to "Ночь", "disarmed" to "Снята")
++            .forEach { (value, label) ->
++                FilledTonalButton(
++                    onClick = {},
++                    modifier = Modifier.fillMaxWidth(),
++                    shape = RoundedCornerShape(10.dp)
++                ) { Text(label) }
++            }
++    }
++}
++
++@Composable
++private fun SensorControl(device: DeviceState) {
++    Column(
++        modifier = Modifier.fillMaxWidth(),
++        horizontalAlignment = Alignment.CenterHorizontally
++    ) {
++        val parts = (device.primaryValue ?: "---").split(" ")
++        val value = parts.getOrElse(0) { "---" }
++        val unit = parts.getOrElse(1) { "" }
++        Text(
++            value,
++            fontSize = 48.sp,
++            fontWeight = FontWeight.Light,
++            color = Gold
++        )
++        if (unit.isNotEmpty()) {
++            Text(
++                unit,
++                fontSize = 16.sp,
++                color = MaterialTheme.colorScheme.onSurfaceVariant
++            )
++        }
++    }
++}
++
++@Composable
++private fun FanControl(device: DeviceState) {
++    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
++        SwitchControl(device)
++        SliderRow("Скорость", 60, 1, 100, "%")
++        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++            listOf("normal", "sleep", "natural", "auto").forEach { mode ->
++                Chip(mode, mode == "normal")
++            }
++        }
++    }
++}
++
++@Composable
++private fun SceneControl(device: DeviceState) {
++    Button(
++        onClick = {},
++        modifier = Modifier
++            .fillMaxWidth()
++            .height(56.dp),
++        colors = ButtonDefaults.buttonColors(containerColor = Gold),
++        shape = RoundedCornerShape(12.dp)
++    ) {
++        Text("Активировать", color = MaterialTheme.colorScheme.onPrimary, fontSize = 16.sp)
++    }
++}
++
++@Composable
++private fun ButtonControl(device: DeviceState) {
++    Button(
++        onClick = {},
++        modifier = Modifier
++            .fillMaxWidth()
++            .height(56.dp),
++        colors = ButtonDefaults.buttonColors(containerColor = Gold),
++        shape = RoundedCornerShape(12.dp)
++    ) {
++        Text("Нажать", color = MaterialTheme.colorScheme.onPrimary, fontSize = 16.sp)
++    }
++}
++
++@Composable
++private fun SliderRow(label: String, value: Int, rangeStart: Int, rangeEnd: Int, unit: String) {
++    Column(modifier = Modifier.fillMaxWidth()) {
++        Row(
++            modifier = Modifier.fillMaxWidth(),
++            horizontalArrangement = Arrangement.SpaceBetween
++        ) {
++            Text(label, fontSize = 14.sp, color = MaterialTheme.colorScheme.onBackground)
++            Text("$value$unit", fontSize = 14.sp, color = Gold)
++        }
++        Slider(
++            value = value.toFloat(),
++            onValueChange = {},
++            valueRange = rangeStart.toFloat()..rangeEnd.toFloat(),
++            colors = androidx.compose.material3.SliderDefaults.colors(
++                thumbColor = Gold,
++                activeTrackColor = Gold,
++                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant
++            )
++        )
++    }
++}
++
++@Composable
++private fun Chip(text: String, selected: Boolean) {
++    val bgColor = if (selected) Gold else MaterialTheme.colorScheme.surfaceVariant
++    val textColor = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
++    Text(
++        text,
++        fontSize = 12.sp,
++        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
++        color = textColor,
++        modifier = Modifier
++            .background(bgColor, RoundedCornerShape(20.dp))
++            .padding(horizontal = 14.dp, vertical = 6.dp)
++    )
++}
++
++private fun zoneIcon(name: String): ImageVector {
++    val lower = name.lowercase()
++    return when {
++        "кухн" in lower -> Icons.Default.Kitchen
++        "спальн" in lower -> Icons.Default.Bed
++        "гостин" in lower || "зал" in lower -> Icons.Default.Home
++        "ванн" in lower || "санузел" in lower -> Icons.Default.Bathtub
++        "улиц" in lower || "двор" in lower -> Icons.Default.Park
++        "техн" in lower || "котельн" in lower -> Icons.Default.Build
++        "детск" in lower -> Icons.Default.ChildCare
++        else -> Icons.Default.Room
++    }
++}
++
++private fun deviceIcon(type: String): ImageVector = when (type) {
++    "SW" -> Icons.Default.Power
++    "LT" -> Icons.Default.Lightbulb
++    "CV" -> Icons.Default.Blinds
++    "CL" -> Icons.Default.AcUnit
++    "LK" -> Icons.Default.Lock
++    "MS" -> Icons.Default.PlayArrow
++    "SC" -> Icons.Default.Movie
++    "AL" -> Icons.Default.Security
++    "SE" -> Icons.Default.Sensors
++    "FN" -> Icons.Default.Air
++    "BT" -> Icons.Default.TouchApp
++    else -> Icons.Default.Power
++}
++
++private fun deviceTypeGroup(type: String): String = when (type) {
++    "SW" -> "Выключатели"
++    "LT" -> "Свет"
++    "CV" -> "Шторы"
++    "CL" -> "Климат"
++    "LK" -> "Замки"
++    "MS" -> "Медиа"
++    "SC" -> "Сценарии"
++    "AL" -> "Охрана"
++    "SE" -> "Датчики"
++    "FN" -> "Вентиляция"
++    "BT" -> "Кнопки"
++    else -> "Прочее"
++}
++
++private fun deviceTypeLabel(type: String): String = when (type) {
++    "SW" -> "Выключатель"
++    "LT" -> "Светильник"
++    "CV" -> "Штора"
++    "CL" -> "Климат"
++    "LK" -> "Замок"
++    "MS" -> "Медиа"
++    "SC" -> "Сценарий"
++    "AL" -> "Охрана"
++    "SE" -> "Датчик"
++    "FN" -> "Вентилятор"
++    "BT" -> "Кнопка"
++    else -> "Устройство"
++}
+diff --git a/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardViewModel.kt b/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardViewModel.kt
+new file mode 100644
+index 0000000..6c23015
+--- /dev/null
++++ b/app/src/main/java/dev/botoved/rover/ui/dashboard/DashboardViewModel.kt
+@@ -0,0 +1,163 @@
++package dev.botoved.rover.ui.dashboard
++
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import dev.botoved.rover.data.RoverRepository
++import dev.botoved.rover.data.db.AreaEntity
++import dev.botoved.rover.data.db.DeviceEntity
++import dev.botoved.rover.data.db.ServerMetaEntity
++import kotlinx.coroutines.flow.*
++
++data class DeviceState(
++    val shortId: Int,
++    val name: String,
++    val type: String,
++    val areaId: Int?,
++    val isOn: Boolean? = null,
++    val primaryValue: String? = null,
++    val isPending: Boolean = false
++)
++
++data class ZoneUiState(
++    val areaId: Int?,
++    val areaName: String,
++    val devices: List<DeviceState>,
++    val isExpanded: Boolean = true
++)
++
++data class DashboardUiState(
++    val serverName: String = "",
++    val zones: List<ZoneUiState> = emptyList(),
++    val isOnline: Boolean = false,
++    val isLoading: Boolean = true
++)
++
++class DashboardViewModel(
++    private val repository: RoverRepository
++) : ViewModel() {
++
++    private val _deviceStates = MutableStateFlow<Map<Int, DeviceState>>(emptyMap())
++
++    private val _isOnline = MutableStateFlow(false)
++    val isOnline: StateFlow<Boolean> = _isOnline
++
++    private val _expandedZones = MutableStateFlow<Map<Int, Boolean>>(emptyMap())
++    val expandedZones: StateFlow<Map<Int, Boolean>> = _expandedZones
++
++    val uiState: StateFlow<DashboardUiState> = combine(
++        repository.observeMeta(),
++        repository.observeAreas(),
++        repository.observeDevices(),
++        _deviceStates,
++        _expandedZones
++    ) { meta, areas, devices, states, expanded ->
++        val areaMap = areas.associateBy { it.id }
++
++        val deviceStates = devices.map { entity ->
++            val live = states[entity.shortId]
++            live?.copy(
++                name = entity.name,
++                type = entity.type,
++                areaId = entity.areaId
++            ) ?: DeviceState(
++                shortId = entity.shortId,
++                name = entity.name,
++                type = entity.type,
++                areaId = entity.areaId
++            )
++        }
++
++        val grouped = deviceStates.groupBy { it.areaId }
++
++        val namedZones = areas.map { area ->
++            ZoneUiState(
++                areaId = area.id,
++                areaName = area.name,
++                devices = grouped[area.id] ?: emptyList(),
++                isExpanded = expanded.getOrDefault(area.id, true)
++            )
++        }
++        val noZone = grouped[null] ?: emptyList()
++        val allZones = if (noZone.isNotEmpty()) {
++            namedZones + ZoneUiState(
++                areaId = null,
++                areaName = "Устройства вне групп",
++                devices = noZone,
++                isExpanded = expanded.getOrDefault(-1, true)
++            )
++        } else {
++            namedZones
++        }
++
++        DashboardUiState(
++            serverName = meta?.serverName ?: "",
++            zones = allZones,
++            isOnline = _isOnline.value,
++            isLoading = devices.isEmpty() && meta == null
++        )
++    }.stateIn(
++        scope = viewModelScope,
++        started = SharingStarted.WhileSubscribed(5_000),
++        initialValue = DashboardUiState(isLoading = true)
++    )
++
++    fun onStatusReceived(states: List<Map<*, *>>) {
++        val current = _deviceStates.value.toMutableMap()
++        for (s in states) {
++            val id = (s["id"] as? Int) ?: continue
++            val existing = current[id] ?: DeviceState(
++                shortId = id, name = "", type = "", areaId = null
++            )
++            current[id] = existing.copy(
++                isOn = parseIsOn(s),
++                primaryValue = parsePrimaryValue(s)
++            )
++        }
++        _deviceStates.value = current
++    }
++
++    fun onPushReceived(fields: Map<*, *>) {
++        val id = (fields["id"] as? Int) ?: return
++        val current = _deviceStates.value.toMutableMap()
++        val existing = current[id] ?: DeviceState(
++            shortId = id, name = "", type = "", areaId = null
++        )
++        current[id] = existing.copy(
++            isOn = parseIsOn(fields),
++            primaryValue = parsePrimaryValue(fields),
++            isPending = false
++        )
++        _deviceStates.value = current
++    }
++
++    fun onConnectionChanged(online: Boolean) {
++        _isOnline.value = online
++    }
++
++    fun onZoneExpandToggle(areaId: Int?) {
++        _expandedZones.value = _expandedZones.value.toMutableMap().apply {
++            val key = areaId ?: -1
++            this[key] = !(this[key] ?: true)
++        }
++    }
++
++    private fun parseIsOn(fields: Map<*, *>): Boolean? {
++        return when (val s = fields["s"]) {
++            is Boolean -> s
++            is String -> s == "on" || s == "open" || s == "playing" || s == "unlocked"
++            else -> null
++        }
++    }
++
++    private fun parsePrimaryValue(fields: Map<*, *>): String? {
++        fields["t"]?.let { return "${it}°C" }
++        fields["b"]?.let { return "${it}%" }
++        fields["p"]?.let { return "${it}%" }
++        fields["vol"]?.let { return "${it}%" }
++        fields["sp"]?.let { return "${it}%" }
++        val v = fields["v"]
++        val u = fields["u"]
++        if (v != null) return if (u != null) "$v $u" else "$v"
++        return null
++    }
++}
+diff --git a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
+index 2e4a8a3..78f621b 100644
+--- a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
++++ b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
+@@ -119,6 +119,10 @@ class OnboardingViewModel(
+     fun onApproved() {
+         approvalTimeoutJob?.cancel()
+         _state.value = OnboardingState.Approved
++        viewModelScope.launch {
++            prefs.setApproved()
++            Log.i(TAG, "Application approved — DataStore updated")
++        }
+     }
+ 
+     fun onReset() {
+diff --git a/app/src/main/java/dev/botoved/rover/ui/theme/Theme.kt b/app/src/main/java/dev/botoved/rover/ui/theme/Theme.kt
+index 7dad6ee..7b4f997 100644
+--- a/app/src/main/java/dev/botoved/rover/ui/theme/Theme.kt
++++ b/app/src/main/java/dev/botoved/rover/ui/theme/Theme.kt
+@@ -18,6 +18,7 @@ private val RoverColorScheme = darkColorScheme(
+     background = BgPrimary,
+     surface = BgCard,
+     surfaceVariant = BgSecondary,
++    onSurfaceVariant = Color(0xFFA0A0A0),
+ )
+ 
+ @Composable
+diff --git a/build.gradle.kts b/build.gradle.kts
+index 020183f..bf5367c 100644
+--- a/build.gradle.kts
++++ b/build.gradle.kts
+@@ -1,4 +1,5 @@
+ plugins {
+     alias(libs.plugins.android.application) apply false
+     alias(libs.plugins.kotlin.compose) apply false
++    alias(libs.plugins.ksp) apply false
+ }
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 37a8209..6bd89dc 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -1,13 +1,14 @@
+ [versions]
+ agp = "9.0.0"
+ kotlin = "2.3.0"
++ksp = "2.3.9"
+ coreKtx = "1.13.1"
+ lifecycleRuntimeKtx = "2.8.6"
+ activityCompose = "1.9.2"
+ composeBom = "2024.09.03"
+ navigationCompose = "2.8.2"
+ koin = "4.0.0"
+-room = "2.6.1"
++room = "2.8.4"
+ datastore = "1.1.1"
+ msgpack = "0.9.8"
+ reticulumKt = "v0.0.21"
+@@ -51,3 +52,4 @@ androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-man
+ [plugins]
+ android-application = { id = "com.android.application", version.ref = "agp" }
+ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
++ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+diff --git a/patches/0001-fix-invert-noWifi-logic-center-UI-text-with-fillMaxW.patch b/patches/0001-fix-invert-noWifi-logic-center-UI-text-with-fillMaxW.patch
+new file mode 100644
+index 0000000..1f06c93
+--- /dev/null
++++ b/patches/0001-fix-invert-noWifi-logic-center-UI-text-with-fillMaxW.patch
+@@ -0,0 +1,194 @@
++From 8a87538f4c2020c8a0e735bf4ede33c750ed5830 Mon Sep 17 00:00:00 2001
++From: BotoVed <50742084+BotoVed@users.noreply.github.com>
++Date: Mon, 8 Jun 2026 11:56:04 +0300
++Subject: [PATCH] fix: invert noWifi logic, center UI text with fillMaxWidth
++
++---
++ .../rover/ui/onboarding/OnboardingScreen.kt   | 48 ++++++++++++++-----
++ .../ui/onboarding/OnboardingViewModel.kt      | 37 ++++++++++++--
++ 2 files changed, 69 insertions(+), 16 deletions(-)
++
++diff --git a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
++index 36c9d53..d0e9907 100644
++--- a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
+++++ b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingScreen.kt
++@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Arrangement
++ import androidx.compose.foundation.layout.Box
++ import androidx.compose.foundation.layout.Column
++ import androidx.compose.foundation.layout.fillMaxSize
+++import androidx.compose.foundation.layout.fillMaxWidth
++ import androidx.compose.foundation.layout.padding
++ import androidx.compose.foundation.shape.RoundedCornerShape
++ import androidx.compose.material3.Button
++@@ -144,8 +145,9 @@ fun OnboardingScreen(
++                         }
++                     }
++                     val context = LocalContext.current
+++                    val noWifi = s.tcp == null || s.ssid == null
++                     Button(
++-                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, context) },
+++                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, noWifi, context) },
++                         colors = ButtonDefaults.buttonColors(
++                             containerColor = MaterialTheme.colorScheme.primary
++                         )
++@@ -161,13 +163,27 @@ fun OnboardingScreen(
++ 
++             is OnboardingState.Sending -> {
++                 Column(
++-                    modifier = Modifier.align(Alignment.Center),
+++                    modifier = Modifier
+++                        .align(Alignment.Center)
+++                        .fillMaxWidth()
+++                        .padding(horizontal = 32.dp),
++                     horizontalAlignment = Alignment.CenterHorizontally,
++                     verticalArrangement = Arrangement.spacedBy(16.dp)
++                 ) {
++                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
++-                    Text("Отправка запроса...",
++-                        color = MaterialTheme.colorScheme.onBackground)
+++                    Text(
+++                        "Отправка запроса...",
+++                        color = MaterialTheme.colorScheme.onBackground,
+++                        textAlign = TextAlign.Center
+++                    )
+++                    if (s.noWifi) {
+++                        Text(
+++                            "Нет подключения к Wi-Fi сервера.\nРегистрация через BLE может быть медленнее.",
+++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                            fontSize = 12.sp,
+++                            textAlign = TextAlign.Center
+++                        )
+++                    }
++                 }
++             }
++ 
++@@ -175,23 +191,31 @@ fun OnboardingScreen(
++                 Column(
++                     modifier = Modifier
++                         .align(Alignment.Center)
++-                        .padding(24.dp),
+++                        .fillMaxWidth()
+++                        .padding(horizontal = 32.dp),
++                     horizontalAlignment = Alignment.CenterHorizontally,
++                     verticalArrangement = Arrangement.spacedBy(16.dp)
++                 ) {
++                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
++                     Text(
++-                        "Ожидание подтверждения",
+++                        s.step,
++                         fontSize = 18.sp,
++                         fontWeight = FontWeight.Medium,
++-                        color = MaterialTheme.colorScheme.onBackground
++-                    )
++-                    Text(
++-                        "Открой Home Assistant и одобри запрос в\nНастройки → Rover → Pending",
++-                        fontSize = 13.sp,
++-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                        color = MaterialTheme.colorScheme.onBackground,
++                         textAlign = TextAlign.Center
++                     )
+++                    if (s.noWifi) {
+++                        Text(
+++                            "Нет Wi-Fi, используется BLE",
+++                            fontSize = 13.sp,
+++                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+++                            textAlign = TextAlign.Center
+++                        )
+++                    }
+++                    TextButton(onClick = { viewModel.onReset() }) {
+++                        Text("Отмена",
+++                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+++                    }
++                 }
++             }
++ 
++diff --git a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
++index f26c344..2e4a8a3 100644
++--- a/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
+++++ b/app/src/main/java/dev/botoved/rover/ui/onboarding/OnboardingViewModel.kt
++@@ -7,6 +7,8 @@ import androidx.lifecycle.ViewModel
++ import androidx.lifecycle.viewModelScope
++ import androidx.localbroadcastmanager.content.LocalBroadcastManager
++ import dev.botoved.rover.data.ServerPreferences
+++import kotlinx.coroutines.Job
+++import kotlinx.coroutines.delay
++ import kotlinx.coroutines.flow.MutableStateFlow
++ import kotlinx.coroutines.flow.StateFlow
++ import kotlinx.coroutines.launch
++@@ -22,8 +24,11 @@ sealed class OnboardingState {
++         val ssid: String?,
++         val uid: String
++     ) : OnboardingState()
++-    object Sending : OnboardingState()
++-    object WaitingApproval : OnboardingState()
+++    data class Sending(val noWifi: Boolean = false) : OnboardingState()
+++    data class WaitingApproval(
+++        val step: String = "Отправка запроса...",
+++        val noWifi: Boolean = false
+++    ) : OnboardingState()
++     object Approved : OnboardingState()
++     data class Error(val message: String) : OnboardingState()
++ }
++@@ -36,6 +41,7 @@ class OnboardingViewModel(
++ 
++     private val _state = MutableStateFlow<OnboardingState>(OnboardingState.Scanning)
++     val state: StateFlow<OnboardingState> = _state
+++    private var approvalTimeoutJob: Job? = null
++ 
++     fun onQrScanned(raw: String) {
++         try {
++@@ -76,10 +82,11 @@ class OnboardingViewModel(
++         tcp: String?,
++         ssid: String?,
++         uid: String,
+++        noWifi: Boolean,
++         context: Context
++     ) {
++         viewModelScope.launch {
++-            _state.value = OnboardingState.Sending
+++            _state.value = OnboardingState.Sending(noWifi = noWifi)
++             prefs.saveServer(destHash, name, pk, tcp, ssid)
++             prefs.saveUid(uid)
++ 
++@@ -92,15 +99,37 @@ class OnboardingViewModel(
++             }
++             LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
++             Log.i(TAG, "ACTION_REGISTER broadcast sent")
++-            _state.value = OnboardingState.WaitingApproval
+++            _state.value = OnboardingState.WaitingApproval(
+++                step = "Запрос отправлен, ожидаем сервер...",
+++                noWifi = noWifi
+++            )
+++
+++            approvalTimeoutJob?.cancel()
+++            approvalTimeoutJob = viewModelScope.launch {
+++                delay(30_000)
+++                if (_state.value is OnboardingState.WaitingApproval) {
+++                    _state.value = OnboardingState.Error(
+++                        "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
+++                    )
+++                }
+++            }
++         }
++     }
++ 
++     fun onApproved() {
+++        approvalTimeoutJob?.cancel()
++         _state.value = OnboardingState.Approved
++     }
++ 
++     fun onReset() {
+++        approvalTimeoutJob?.cancel()
++         _state.value = OnboardingState.Scanning
++     }
+++
+++    fun updateStep(step: String) {
+++        val current = _state.value
+++        if (current is OnboardingState.WaitingApproval) {
+++            _state.value = current.copy(step = step)
+++        }
+++    }
++ }
++-- 
++2.43.0
++
+-- 
+2.43.0
+
