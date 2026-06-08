@@ -94,7 +94,7 @@ fun OnboardingScreen(
     ) {
         when (val s = state) {
             is OnboardingState.Scanning -> {
-                QrScannerView(onScanned = { viewModel.onQrScanned(it) })
+                QrScannerView(onScanned = { viewModel.onQrScanned(it, context) })
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -113,51 +113,6 @@ fun OnboardingScreen(
                         fontSize = 13.sp,
                         modifier = Modifier.padding(top = 4.dp)
                     )
-                }
-            }
-
-            is OnboardingState.Confirming -> {
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Text(
-                        "Подключиться к серверу?",
-                        fontSize = 20.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surface
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(s.name, fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface)
-                            Text(s.destHash, fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(top = 4.dp))
-                        }
-                    }
-                    val context = LocalContext.current
-                    val noWifi = s.tcp == null || s.ssid == null
-                    Button(
-                        onClick = { viewModel.onConfirm(s.destHash, s.name, s.pk, s.tcp, s.ssid, s.uid, noWifi, context) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.primary
-                        )
-                    ) {
-                        Text("Подключиться", color = MaterialTheme.colorScheme.onPrimary)
-                    }
-                    TextButton(onClick = { viewModel.onReset() }) {
-                        Text("Сканировать снова",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                 }
             }
 

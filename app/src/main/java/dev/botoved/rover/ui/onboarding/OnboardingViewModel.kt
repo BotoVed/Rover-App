@@ -16,14 +16,6 @@ import org.json.JSONObject
 
 sealed class OnboardingState {
     object Scanning : OnboardingState()
-    data class Confirming(
-        val destHash: String,
-        val name: String,
-        val pk: String,
-        val tcp: String?,
-        val ssid: String?,
-        val uid: String
-    ) : OnboardingState()
     data class Sending(val noWifi: Boolean = false) : OnboardingState()
     data class WaitingApproval(
         val step: String = "Отправка запроса...",
@@ -43,7 +35,7 @@ class OnboardingViewModel(
     val state: StateFlow<OnboardingState> = _state
     private var approvalTimeoutJob: Job? = null
 
-    fun onQrScanned(raw: String) {
+    fun onQrScanned(raw: String, context: Context) {
         try {
             val json = JSONObject(raw)
             val rvr = json.getJSONObject("rvr")
@@ -69,50 +61,38 @@ class OnboardingViewModel(
             }
 
             Log.i(TAG, "QR v2 parsed: dst=$dst nm=$nm tcp=$tcp ssid=$ssid uid=$uid")
-            _state.value = OnboardingState.Confirming(dst, nm, pk, tcp, ssid, uid)
-        } catch (e: Exception) {
-            _state.value = OnboardingState.Error("Не удалось прочитать QR: ${e.message}")
-        }
-    }
+            viewModelScope.launch {
+                _state.value = OnboardingState.Sending(noWifi = tcp != null && ssid != null)
+                delay(100)
+                prefs.saveServer(dst, nm, pk, tcp, ssid)
+                prefs.saveUid(uid)
 
-    fun onConfirm(
-        destHash: String,
-        name: String,
-        pk: String,
-        tcp: String?,
-        ssid: String?,
-        uid: String,
-        noWifi: Boolean,
-        context: Context
-    ) {
-        viewModelScope.launch {
-            _state.value = OnboardingState.Sending(noWifi = noWifi)
-            prefs.saveServer(destHash, name, pk, tcp, ssid)
-            prefs.saveUid(uid)
+                val intent = Intent("dev.botoved.rover.ACTION_REGISTER").apply {
+                    putExtra("dst", dst)
+                    putExtra("pk", pk)
+                    putExtra("uid", uid)
+                    tcp?.let { putExtra("tcp", it) }
+                    ssid?.let { putExtra("ssid", it) }
+                }
+                LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+                Log.i(TAG, "ACTION_REGISTER broadcast sent")
+                _state.value = OnboardingState.WaitingApproval(
+                    step = "Запрос отправлен, ожидаем сервер...",
+                    noWifi = tcp != null && ssid != null
+                )
 
-            val intent = Intent("dev.botoved.rover.ACTION_REGISTER").apply {
-                putExtra("dst", destHash)
-                putExtra("pk", pk)
-                putExtra("uid", uid)
-                tcp?.let { putExtra("tcp", it) }
-                ssid?.let { putExtra("ssid", it) }
-            }
-            LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
-            Log.i(TAG, "ACTION_REGISTER broadcast sent")
-            _state.value = OnboardingState.WaitingApproval(
-                step = "Запрос отправлен, ожидаем сервер...",
-                noWifi = noWifi
-            )
-
-            approvalTimeoutJob?.cancel()
-            approvalTimeoutJob = viewModelScope.launch {
-                delay(30_000)
-                if (_state.value is OnboardingState.WaitingApproval) {
-                    _state.value = OnboardingState.Error(
-                        "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
-                    )
+                approvalTimeoutJob?.cancel()
+                approvalTimeoutJob = viewModelScope.launch {
+                    delay(30_000)
+                    if (_state.value is OnboardingState.WaitingApproval) {
+                        _state.value = OnboardingState.Error(
+                            "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
+                        )
+                    }
                 }
             }
+        } catch (e: Exception) {
+            _state.value = OnboardingState.Error("Не удалось прочитать QR: ${e.message}")
         }
     }
 
