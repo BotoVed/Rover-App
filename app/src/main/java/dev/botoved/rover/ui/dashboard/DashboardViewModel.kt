@@ -97,6 +97,7 @@ class DashboardViewModel(
         _deviceStates,
         _expandedZones
     ) { meta, areas, devices, states, expanded ->
+        Log.i("Rover", "VM: areas=${areas.size} devices=${devices.size} meta=${meta?.serverName}")
         val areaMap = areas.associateBy { it.id }
 
         val deviceStates = devices.map { entity ->
@@ -123,7 +124,8 @@ class DashboardViewModel(
                 isExpanded = expanded.getOrDefault(area.id, true)
             )
         }
-        val noZone = grouped[null] ?: emptyList()
+        val noZone = (grouped[null] ?: emptyList()) +
+            deviceStates.filter { it.areaId != null && it.areaId !in areaMap }
         val allZones = if (noZone.isNotEmpty()) {
             namedZones + ZoneUiState(
                 areaId = null,
@@ -150,7 +152,7 @@ class DashboardViewModel(
     fun onStatusReceived(states: List<Map<*, *>>) {
         val current = _deviceStates.value.toMutableMap()
         for (s in states) {
-            val id = (s["0"] as? Int) ?: continue
+            val id = (s["0"] as? Number)?.toInt() ?: continue
             val existing = current[id] ?: DeviceState(
                 shortId = id, name = "", type = "", areaId = null
             )
@@ -163,7 +165,7 @@ class DashboardViewModel(
     }
 
     fun onPushReceived(fields: Map<*, *>) {
-        val id = (fields["0"] as? Int) ?: return
+        val id = (fields["0"] as? Number)?.toInt() ?: return
         val current = _deviceStates.value.toMutableMap()
         val existing = current[id] ?: DeviceState(
             shortId = id, name = "", type = "", areaId = null

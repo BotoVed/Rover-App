@@ -8,3 +8,8 @@
 ## Android Build
 - `./gradlew assembleDebug` then `adb install -r .../app-debug.apk`
 - ADB logs: `adb logcat -d -s Rover`
+
+## Dashboard — Device Display Rules
+- Devices with `areaId = null` → zone "Устройства вне групп"
+- Devices with `areaId != null` that don't match any saved `AreaEntity` → also in "Устройства вне групп"
+- Never drop devices from display just because their areaId doesn't match a saved area
