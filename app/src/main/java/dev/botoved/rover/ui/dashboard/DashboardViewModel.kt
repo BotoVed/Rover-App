@@ -34,6 +34,7 @@ data class DashboardUiState(
     val serverName: String = "",
     val zones: List<ZoneUiState> = emptyList(),
     val isOnline: Boolean = false,
+    val channel: String? = null,
     val isLoading: Boolean = true
 )
 
@@ -86,11 +87,13 @@ class DashboardViewModel(
 
     private val _isOnline = MutableStateFlow(false)
     val isOnline: StateFlow<Boolean> = _isOnline
+    private val _channel = MutableStateFlow<String?>(null)
+    val channel: StateFlow<String?> = _channel
 
     private val _expandedZones = MutableStateFlow<Map<Int, Boolean>>(emptyMap())
     val expandedZones: StateFlow<Map<Int, Boolean>> = _expandedZones
 
-    val uiState: StateFlow<DashboardUiState> = combine(
+    private val baseState: StateFlow<DashboardUiState> = combine(
         repository.observeMeta(),
         repository.observeAreas(),
         repository.observeDevices(),
@@ -140,9 +143,20 @@ class DashboardViewModel(
         DashboardUiState(
             serverName = meta?.serverName ?: "",
             zones = allZones,
-            isOnline = _isOnline.value,
             isLoading = !repository.isConfigReceived
         )
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = DashboardUiState(isLoading = true)
+    )
+
+    val uiState: StateFlow<DashboardUiState> = combine(
+        baseState,
+        _channel,
+        _isOnline
+    ) { base, channel, online ->
+        base.copy(channel = channel, isOnline = online)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
@@ -180,6 +194,11 @@ class DashboardViewModel(
         )
         _deviceStates.value = current
         Log.i("Rover", "PUSH applied id=$id isOn=${current[id]?.isOn} value=${current[id]?.primaryValue}")
+    }
+
+    fun onPongReceived(channel: String) {
+        _isOnline.value = true
+        _channel.value = channel
     }
 
     fun onConnectionChanged(online: Boolean) {

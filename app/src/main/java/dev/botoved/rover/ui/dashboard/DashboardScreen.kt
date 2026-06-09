@@ -145,14 +145,22 @@ fun DashboardScreen(
                 } catch (_: Exception) {}
             }
         }
+        val pongReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                val channel = intent?.getStringExtra("channel") ?: return
+                viewModel.onPongReceived(channel)
+            }
+        }
         LocalBroadcastManager.getInstance(context).apply {
             registerReceiver(statusReceiver, IntentFilter("dev.botoved.rover.ACTION_STATUS"))
             registerReceiver(pushReceiver, IntentFilter("dev.botoved.rover.ACTION_PUSH"))
+            registerReceiver(pongReceiver, IntentFilter("dev.botoved.rover.ACTION_PONG"))
         }
         onDispose {
             LocalBroadcastManager.getInstance(context).apply {
                 unregisterReceiver(statusReceiver)
                 unregisterReceiver(pushReceiver)
+                unregisterReceiver(pongReceiver)
             }
         }
     }
@@ -167,6 +175,7 @@ fun DashboardScreen(
                 DashboardTopBar(
                     serverName = uiState.serverName,
                     isOnline = uiState.isOnline,
+                    channel = uiState.channel,
                     destHash = destHash
                 )
             },
@@ -217,6 +226,7 @@ fun DashboardScreen(
 private fun DashboardTopBar(
     serverName: String,
     isOnline: Boolean,
+    channel: String?,
     destHash: String?
 ) {
     TopAppBar(
@@ -251,7 +261,7 @@ private fun DashboardTopBar(
                 )
                 Spacer(Modifier.width(4.dp))
                 Text(
-                    if (isOnline) "онлайн" else "офлайн",
+                    if (isOnline && channel != null) channel else "офлайн",
                     fontSize = 11.sp,
                     color = if (isOnline) Green else Red
                 )

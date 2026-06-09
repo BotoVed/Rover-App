@@ -1,6 +1,8 @@
 package dev.botoved.rover.service
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import android.util.Log
 
@@ -25,5 +27,13 @@ object WifiChecker {
         val current = currentSsid(context)
         Log.i(TAG, "Current SSID: $current, target: $targetSsid")
         return current == targetSsid
+    }
+
+    fun isWifiConnected(context: Context): Boolean {
+        val cm = context.applicationContext
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(network) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
     }
 }

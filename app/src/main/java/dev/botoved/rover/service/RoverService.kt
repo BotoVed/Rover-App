@@ -179,6 +179,12 @@ class RoverService : Service() {
                         }
                         6 -> {
                             Log.i(TAG, "PING/PONG received — link alive")
+                            val channel = manager.getActiveChannel(applicationContext)
+                            val pongIntent = Intent("dev.botoved.rover.ACTION_PONG").apply {
+                                putExtra("channel", channel)
+                            }
+                            LocalBroadcastManager.getInstance(this@RoverService)
+                                .sendBroadcast(pongIntent)
                         }
                         else -> Log.i(TAG, "Message tp=$tp — unhandled")
                     }

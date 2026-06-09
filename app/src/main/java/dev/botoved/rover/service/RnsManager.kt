@@ -33,6 +33,7 @@ class RnsManager(
     private var reticulum: Reticulum? = null
     private var bleDriver: AndroidBLEDriver? = null
     private var bleInterface: BLEInterface? = null
+    private var tcpInterface: TCPClientInterface? = null
     var lxmRouter: LXMRouter? = null
         private set
     var deliveryDestination: Destination? = null
@@ -123,19 +124,20 @@ class RnsManager(
     ): Boolean {
         val rns = reticulum ?: return false
         return try {
-            val tcpInterface = TCPClientInterface(
+            val iface = TCPClientInterface(
                 name = "rover-tcp",
                 targetHost = host,
                 targetPort = port,
             )
-            tcpInterface.start()
-            rns.addInterface(tcpInterface)
-            Transport.registerInterface(tcpInterface.toRef())
+            tcpInterface = iface
+            iface.start()
+            rns.addInterface(iface)
+            Transport.registerInterface(iface.toRef())
             Log.i(TAG, "TCP interface added: $host:$port, waiting for online...")
 
             val deadline = System.currentTimeMillis() + timeoutMs
             while (System.currentTimeMillis() < deadline) {
-                if (tcpInterface.online.value) {
+                if (iface.online.value) {
                     val elapsed = timeoutMs - (deadline - System.currentTimeMillis())
                     Log.i(TAG, "TCP interface online after ${elapsed}ms")
                     deliveryDestination?.announce()
@@ -149,6 +151,17 @@ class RnsManager(
         } catch (e: Exception) {
             Log.e(TAG, "TCP interface failed: ${e.message}", e)
             false
+        }
+    }
+
+    fun getActiveChannel(context: Context): String {
+        val tcpOnline = tcpInterface?.online?.value == true
+        val bleOnline = bleInterface?.online?.value == true
+        return when {
+            tcpOnline && WifiChecker.isWifiConnected(context) -> "WiFi"
+            tcpOnline -> "4G"
+            bleOnline -> "BLE"
+            else -> "LoRa"
         }
     }
 
@@ -279,6 +292,7 @@ class RnsManager(
         deliveryDestination = null
         bleInterface = null
         bleDriver = null
+        tcpInterface = null
         reticulum = null
     }
 }
