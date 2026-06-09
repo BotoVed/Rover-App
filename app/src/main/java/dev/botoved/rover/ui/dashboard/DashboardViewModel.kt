@@ -141,7 +141,7 @@ class DashboardViewModel(
             serverName = meta?.serverName ?: "",
             zones = allZones,
             isOnline = _isOnline.value,
-            isLoading = devices.isEmpty() && meta == null
+            isLoading = !repository.isConfigReceived
         )
     }.stateIn(
         scope = viewModelScope,
@@ -152,7 +152,7 @@ class DashboardViewModel(
     fun onStatusReceived(states: List<Map<*, *>>) {
         val current = _deviceStates.value.toMutableMap()
         for (s in states) {
-            val id = (s["0"] as? Number)?.toInt() ?: continue
+            val id = (s["id"] as? Number)?.toInt() ?: continue
             val existing = current[id] ?: DeviceState(
                 shortId = id, name = "", type = "", areaId = null
             )
@@ -165,7 +165,10 @@ class DashboardViewModel(
     }
 
     fun onPushReceived(fields: Map<*, *>) {
-        val id = (fields["0"] as? Number)?.toInt() ?: return
+        val id = (fields["9"] as? Number)?.toInt()
+            ?: (fields[9] as? Number)?.toInt()
+            ?: return
+        Log.i("Rover", "PUSH received fields=$fields id=$id")
         val current = _deviceStates.value.toMutableMap()
         val existing = current[id] ?: DeviceState(
             shortId = id, name = "", type = "", areaId = null
@@ -176,6 +179,7 @@ class DashboardViewModel(
             isPending = false
         )
         _deviceStates.value = current
+        Log.i("Rover", "PUSH applied id=$id isOn=${current[id]?.isOn} value=${current[id]?.primaryValue}")
     }
 
     fun onConnectionChanged(online: Boolean) {
@@ -197,20 +201,23 @@ class DashboardViewModel(
     }
 
     private fun parseIsOn(fields: Map<*, *>): Boolean? {
-        return when (val v = fields["1"]) {
+        val rawV = fields["1"] ?: fields[1L] ?: fields[1]
+        val v = rawV
+        Log.i("Rover", "parseIsOn fields keys=${fields.keys} rawV=$rawV v=$v")
+        return when (v) {
             is String -> v == "on" || v == "open" || v == "playing" || v == "unlocked"
             else -> null
         }
     }
 
     private fun parsePrimaryValue(fields: Map<*, *>): String? {
-        fields["6"]?.let { return "${it}°C" }
-        fields["2"]?.let { return "${it}%" }
-        fields["5"]?.let { return "${it}%" }
-        fields["14"]?.let { return "${it}%" }
-        fields["21"]?.let { return "${it}%" }
-        val v = fields["1"]
-        val u = fields["25"]
+        (fields["6"] ?: fields[6])?.let { return "${it}°C" }
+        (fields["2"] ?: fields[2])?.let { return "${it}%" }
+        (fields["5"] ?: fields[5])?.let { return "${it}%" }
+        (fields["14"] ?: fields[14])?.let { return "${it}%" }
+        (fields["21"] ?: fields[21])?.let { return "${it}%" }
+        val v = fields["1"] ?: fields[1]
+        val u = fields["25"] ?: fields[25]
         if (v != null) return if (u != null) "$v $u" else "$v"
         return null
     }

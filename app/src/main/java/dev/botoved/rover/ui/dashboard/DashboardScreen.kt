@@ -511,10 +511,13 @@ private fun DeviceRightControl(
 ) {
     when (device.type) {
         "SW", "LT", "FN", "CL" -> {
-            val isOn = device.isOn == true
+            var checked by remember(device.isOn) { mutableStateOf(device.isOn == true) }
             Switch(
-                checked = isOn,
-                onCheckedChange = { onToggle?.invoke(it) },
+                checked = checked,
+                onCheckedChange = {
+                    checked = it
+                    onToggle?.invoke(it)
+                },
                 colors = androidx.compose.material3.SwitchDefaults.colors(
                     checkedThumbColor = Gold,
                     checkedTrackColor = GoldAlpha,

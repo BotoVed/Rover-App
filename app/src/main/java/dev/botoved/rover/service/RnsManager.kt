@@ -93,8 +93,12 @@ class RnsManager(
         Log.i(TAG, "LXMF delivery destination: ${sourceDest.hexHash}")
 
         router.registerDeliveryCallback { message ->
+            val f2 = message.fields
+            Log.i(TAG, "LXMF incoming: fields=${f2?.javaClass?.simpleName} size=${(f2 as? Map<*, *>)?.size}")
+            Log.i(TAG, "LXMF incoming keys: ${(f2 as? Map<*, *>)?.keys?.map { "${it}(${it?.javaClass?.simpleName})" }}")
             val fields = message.fields
-            val tp = (fields?.get(0) as? Number)?.toInt()
+            val f = fields as? Map<Any?, Any?>
+            val tp = (f?.get(0) as? Number)?.toInt()
             Log.i(TAG, "LXMF received tp=$tp")
             when (tp) {
                 4 -> {

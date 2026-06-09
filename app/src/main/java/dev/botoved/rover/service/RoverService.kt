@@ -115,7 +115,10 @@ class RoverService : Service() {
                         when (section) {
                             "m" -> repository.saveMeta(fields ?: emptyMap<Any, Any>())
                             "a" -> repository.saveAreas(fields ?: emptyMap<Any, Any>())
-                            "d" -> repository.saveDevices(fields ?: emptyMap<Any, Any>())
+                            "d" -> {
+                                repository.saveDevices(fields ?: emptyMap<Any, Any>())
+                                repository.markConfigReceived()
+                            }
                         }
                     }
                     if (section == "d") {
@@ -125,11 +128,11 @@ class RoverService : Service() {
                     }
                 }
                 manager.onMessageReceived = { message ->
-                    val fields = message.fields
-                    val tp = (fields?.get(0) as? Number)?.toInt()
+                    val f = message.fields as? Map<Any?, Any?>
+                    val tp = (f?.get(0) as? Number)?.toInt()
                     when (tp) {
                         2 -> {
-                            val states = fields?.get(2) as? List<*>
+                            val states = f?.get(2) as? List<*>
                             if (states != null) {
                                 if (states.isNotEmpty()) {
                                     val first = states.firstOrNull() as? Map<*, *>
@@ -152,15 +155,27 @@ class RoverService : Service() {
                             }
                         }
                         3 -> {
-                            val keyTypes = fields?.keys?.joinToString { "${it}(${it?.javaClass?.simpleName})" }
+                            val keyTypes = f?.keys?.joinToString { "${it}(${it?.javaClass?.simpleName})" }
                             Log.i(TAG, "PUSH keys: $keyTypes")
                             val intent = Intent("dev.botoved.rover.ACTION_PUSH").apply {
                                 val obj = org.json.JSONObject()
-                                fields?.forEach { (k, v) -> obj.put(k.toString(), v) }
+                                f?.forEach { (k, v) -> obj.put(k.toString(), v) }
                                 putExtra("fields", obj.toString())
                             }
                             LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
-                            Log.i(TAG, "PUSH broadcast id=${fields?.get(9)}")
+                            Log.i(TAG, "PUSH broadcast id=${f?.get(9)}")
+                        }
+                        7 -> {
+                            Log.w(TAG, "FORBIDDEN received — access revoked, resetting registration")
+                            serviceScope.launch {
+                                val prefs = ServerPreferences(applicationContext)
+                                prefs.clear()
+                                repository.clearAll()
+                                repository.resetConfigReceived()
+                                Log.i(TAG, "DB cleared on forbidden")
+                            }
+                            val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
+                            LocalBroadcastManager.getInstance(this@RoverService).sendBroadcast(intent)
                         }
                         6 -> {
                             Log.i(TAG, "PING/PONG received — link alive")
@@ -172,7 +187,40 @@ class RoverService : Service() {
                 rnsManager = manager
                 rnsManagerReady.complete(manager)
 
-                updateNotification("Подключение...")
+                // Auto-reconnect if already registered
+                val prefs = ServerPreferences(applicationContext)
+                val reg = prefs.isRegistered.first()
+                if (reg == "approved") {
+                    val dst = prefs.serverDestHash.first()
+                    val pk = prefs.serverPk.first()
+                    val tcp = prefs.serverTcp.first()
+                    val ssid = prefs.serverSsid.first()
+                    val uid = prefs.uid.first()
+                    Log.i(TAG, "Auto-reconnect: dst=$dst tcp=$tcp ssid=$ssid")
+                    if (dst != null && pk != null) {
+                        repository.resetConfigReceived()
+                        repository.clearAll()
+                        Log.i(TAG, "Auto-reconnect: DB cleared")
+                        if (tcp != null && ssid != null) {
+                            if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
+                                val parts = tcp.split(":")
+                                if (parts.size == 2) {
+                                    val online = manager.addTcpInterfaceAndWait(
+                                        parts[0], parts[1].toIntOrNull() ?: 4242
+                                    )
+                                    Log.i(TAG, "Auto-reconnect TCP online=$online")
+                                }
+                            } else {
+                                Log.i(TAG, "Auto-reconnect: not on WiFi $ssid, using BLE only")
+                            }
+                        }
+                        manager.sendRegister(dst, pk, uid ?: "")
+                        Log.i(TAG, "Auto-reconnect: REGISTER sent")
+                        updateNotification("Подключено")
+                    }
+                } else {
+                    updateNotification("Подключение...")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "RNS init failed: ${e.message}", e)
                 updateNotification("Ошибка подключения")
