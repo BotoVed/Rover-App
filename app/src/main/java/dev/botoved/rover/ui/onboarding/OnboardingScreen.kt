@@ -1,6 +1,8 @@
 package dev.botoved.rover.ui.onboarding
 
 import android.Manifest
+import android.content.pm.PackageManager
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -55,16 +57,25 @@ fun OnboardingScreen(
     viewModel: OnboardingViewModel = koinViewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
+    var cameraPermissionGranted by remember { mutableStateOf(false) }
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        if (!granted) {
-            // permission denied, показываем ошибку
-        }
+        cameraPermissionGranted = granted
+        Log.i("Rover", "Camera permission granted=$granted")
     }
 
     LaunchedEffect(Unit) {
-        cameraLauncher.launch(Manifest.permission.CAMERA)
+        val already = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        if (already) {
+            cameraPermissionGranted = true
+            Log.i("Rover", "Camera permission already granted")
+        } else {
+            cameraLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     LaunchedEffect(state) {
@@ -73,7 +84,6 @@ fun OnboardingScreen(
         }
     }
 
-    val context = LocalContext.current
     DisposableEffect(Unit) {
         val receiver = object : android.content.BroadcastReceiver() {
             override fun onReceive(ctx: android.content.Context?, intent: android.content.Intent?) {
@@ -94,7 +104,16 @@ fun OnboardingScreen(
     ) {
         when (val s = state) {
             is OnboardingState.Scanning -> {
-                QrScannerView(onScanned = { viewModel.onQrScanned(it, context) })
+                if (cameraPermissionGranted) {
+                    QrScannerView(onScanned = { viewModel.onQrScanned(it, context) })
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    }
+                }
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
