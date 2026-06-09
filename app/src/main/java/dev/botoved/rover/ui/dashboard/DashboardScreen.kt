@@ -207,7 +207,8 @@ fun DashboardScreen(
                                     zone = zone,
                                     onToggle = { viewModel.onZoneExpandToggle(zone.areaId) },
                                     onDeviceClick = { sheetDevice = it },
-                                    onDeviceToggle = { device, isOn -> viewModel.onToggle(device, isOn) }
+                                    onDeviceToggle = { device, isOn -> viewModel.onToggle(device, isOn) },
+                                    onSceneActivate = { viewModel.onAction(it, "activate") }
                                 )
                             }
                         }
@@ -356,7 +357,8 @@ private fun ZoneSection(
     zone: ZoneUiState,
     onToggle: () -> Unit,
     onDeviceClick: (DeviceState) -> Unit,
-    onDeviceToggle: (DeviceState, Boolean) -> Unit
+    onDeviceToggle: (DeviceState, Boolean) -> Unit,
+    onSceneActivate: (DeviceState) -> Unit = {}
 ) {
     val activeCount = zone.devices.count { it.isOn == true }
     val hasAlarm = zone.devices.any { it.type == "AL" && (it.isOn == true || it.primaryValue != null) }
@@ -436,7 +438,10 @@ private fun ZoneSection(
                     devices.forEach { device ->
                         DeviceCard(
                             device = device,
-                            onClick = { onDeviceClick(device) },
+                            onClick = {
+                                if (device.type == "SC") onSceneActivate(device)
+                                else onDeviceClick(device)
+                            },
                             onToggle = { isOn -> onDeviceToggle(device, isOn) }
                         )
                     }
@@ -546,6 +551,14 @@ private fun DeviceRightControl(
                     fontWeight = FontWeight.Medium
                 )
             }
+        }
+        "SC" -> {
+            Icon(
+                Icons.Filled.PlayArrow,
+                contentDescription = "Активировать",
+                tint = Gold,
+                modifier = Modifier.size(32.dp)
+            )
         }
         "SE", "CV" -> {
             if (device.primaryValue != null) {

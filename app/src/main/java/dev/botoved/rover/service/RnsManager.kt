@@ -56,7 +56,6 @@ class RnsManager(
         reticulum = rns
         Log.i(TAG, "Reticulum started")
 
-        // BLE driver
         val btManager = context.getSystemService(BluetoothManager::class.java)
         val driver = AndroidBLEDriver(
             context = context,
@@ -65,14 +64,12 @@ class RnsManager(
         )
         bleDriver = driver
 
-        // Слушаем обнаруженные пиры
         driver.discoveredPeers
             .onEach { peer ->
                 Log.i(TAG, "BLE peer discovered: ${peer.address}")
             }
             .launchIn(scope)
 
-        // BLE interface
         val iface = BLEInterface(
             name = "rover-ble",
             driver = driver,
@@ -83,7 +80,6 @@ class RnsManager(
         rns.addInterface(iface)
         Log.i(TAG, "BLE interface started")
 
-        // LXMF router
         val router = LXMRouter(
             identity = identity,
             storagePath = configDir,
@@ -168,105 +164,70 @@ class RnsManager(
         }
     }
 
-    suspend fun sendRegister(destHash: String, serverPkBase64: String, uid: String) {
-        val router = lxmRouter ?: run {
-            Log.e(TAG, "LXMRouter not ready")
-            return
+    // Ждёт установки пути к destination. Если пути нет — запрашивает через все интерфейсы.
+    // Возвращает true если путь установлен, false если истёк таймаут.
+    private suspend fun awaitPath(destHashBytes: ByteArray, timeoutMs: Long = 15_000): Boolean {
+        if (Transport.hasPath(destHashBytes)) {
+            Log.i(TAG, "Path already known")
+            return true
         }
-        val sourceDest = deliveryDestination ?: run {
-            Log.e(TAG, "Delivery destination not ready")
-            return
+        Log.i(TAG, "No path yet, requesting via all interfaces...")
+        Transport.requestPath(destHashBytes)
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (Transport.hasPath(destHashBytes)) {
+                Log.i(TAG, "Path established after ${timeoutMs - (deadline - System.currentTimeMillis())}ms")
+                return true
+            }
+            delay(100)
         }
-
-        try {
-            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
-            val serverIdentity = Identity.fromPublicKey(
-                pubKeyBytes,
-                defaultCryptoProvider()
-            )
-
-            Log.i(TAG, "Server identity hexHash: ${serverIdentity.hexHash}")
-            Log.i(TAG, "Server identity hash bytes: ${serverIdentity.hash?.joinToString("") { "%02x".format(it) }}")
-            Log.i(TAG, "Server getPublicKey(): ${serverIdentity.getPublicKey()?.joinToString("") { "%02x".format(it) }}")
-
-            val appName = "lxmf"  // LXMRouter.APP_NAME
-            val aspects = arrayOf("delivery")  // LXMRouter.DELIVERY_ASPECT
-            val serverDest = Destination.create(
-                identity = serverIdentity,
-                direction = DestinationDirection.OUT,
-                type = DestinationType.SINGLE,
-                appName = appName,
-                aspects = aspects
-            )
-
-            Log.i(TAG, "Server destination hash: ${serverDest.hexHash}")
-            Log.i(TAG, "Expected hash from QR: $destHash")
-
-            // Ждём установки пути к серверу перед отправкой REGISTER
-            val destHashBytes = serverDest.hash
-            if (destHashBytes != null) {
-                if (!Transport.hasPath(destHashBytes)) {
-                    Log.i(TAG, "No path to server yet, requesting...")
-                    Transport.requestPath(destHashBytes)
-                    val pathDeadline = System.currentTimeMillis() + 15_000
-                    while (System.currentTimeMillis() < pathDeadline) {
-                        if (Transport.hasPath(destHashBytes)) {
-                            Log.i(TAG, "Path established, sending REGISTER")
-                            break
-                        }
-                        delay(100)
-                    }
-                    if (!Transport.hasPath(destHashBytes)) {
-                        Log.w(TAG, "Path not established after 15s, sending REGISTER anyway")
-                    }
-                } else {
-                    Log.i(TAG, "Path to server already known, sending REGISTER")
-                }
-            }
-
-            val fields: MutableMap<Int, Any> = RoverCodec.encodeRegister(uid).toMutableMap()
-
-            val message = LXMessage.create(
-                destination = serverDest,
-                source = sourceDest,
-                title = "",
-                content = "",
-                fields = fields,
-                desiredMethod = null
-            )
-
-            message.deliveryCallback = { msg ->
-                val dstHex = msg.destinationHash?.joinToString("") { "%02x".format(it) }
-                Log.i(TAG, "REGISTER delivered to $dstHex")
-            }
-            message.failedCallback = {
-                Log.e(TAG, "REGISTER delivery failed")
-            }
-
-            router.handleOutbound(message)
-            Log.i(TAG, "REGISTER sent (tp=9)")
-        } catch (e: Exception) {
-            Log.e(TAG, "sendRegister failed: ${e.message}", e)
-        }
+        Log.w(TAG, "Path not established after ${timeoutMs}ms — sending anyway")
+        return false
     }
 
-    suspend fun sendCmd(destHash: String, serverPkBase64: String, fields: Map<Int, Any>) {
-        val router = lxmRouter ?: run {
-            Log.e(TAG, "sendCmd: LXMRouter not ready"); return
-        }
-        val sourceDest = deliveryDestination ?: run {
-            Log.e(TAG, "sendCmd: no delivery destination"); return
-        }
-        try {
+    // Создаёт serverDest из base64 публичного ключа
+    private fun buildServerDest(serverPkBase64: String): Destination? {
+        return try {
             val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
             val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
-            val serverDest = Destination.create(
+            Destination.create(
                 identity = serverIdentity,
                 direction = DestinationDirection.OUT,
                 type = DestinationType.SINGLE,
                 appName = "lxmf",
                 aspects = arrayOf("delivery")
             )
+        } catch (e: Exception) {
+            Log.e(TAG, "buildServerDest failed: ${e.message}", e)
+            null
+        }
+    }
+
+    // Общий метод отправки сообщения. awaitPath=true для REQ/REGISTER/PING, false для CMD.
+    private suspend fun sendMessage(
+        serverPkBase64: String,
+        fields: Map<Int, Any>,
+        logTag: String,
+        awaitPath: Boolean = true,
+        onDelivered: (() -> Unit)? = null,
+        onFailed: (() -> Unit)? = null,
+    ) {
+        val router = lxmRouter ?: run {
+            Log.e(TAG, "$logTag: LXMRouter not ready"); return
+        }
+        val sourceDest = deliveryDestination ?: run {
+            Log.e(TAG, "$logTag: no delivery destination"); return
+        }
+        val serverDest = buildServerDest(serverPkBase64) ?: return
+
+        if (awaitPath) {
+            val destHashBytes = serverDest.hash
+            if (destHashBytes != null) {
+                awaitPath(destHashBytes)
+            }
+        }
+
+        try {
             val message = LXMessage.create(
                 destination = serverDest,
                 source = sourceDest,
@@ -275,80 +236,56 @@ class RnsManager(
                 fields = fields.toMutableMap(),
                 desiredMethod = null
             )
-            message.failedCallback = {
-                Log.e(TAG, "CMD delivery failed fields=$fields")
+            onDelivered?.let { cb ->
+                message.deliveryCallback = { cb() }
+            }
+            onFailed?.let { cb ->
+                message.failedCallback = { cb() }
             }
             router.handleOutbound(message)
-            Log.i(TAG, "CMD sent fields=$fields")
+            Log.i(TAG, "$logTag sent fields=$fields")
         } catch (e: Exception) {
-            Log.e(TAG, "sendCmd failed: ${e.message}", e)
+            Log.e(TAG, "$logTag failed: ${e.message}", e)
         }
     }
 
-    suspend fun sendPing(destHash: String, serverPkBase64: String, hashes: Map<String, String>) {
-        val router = lxmRouter ?: run {
-            Log.e(TAG, "sendPing: LXMRouter not ready"); return
-        }
-        val sourceDest = deliveryDestination ?: run {
-            Log.e(TAG, "sendPing: no delivery destination"); return
-        }
-        try {
-            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
-            val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
-            val serverDest = Destination.create(
-                identity = serverIdentity,
-                direction = DestinationDirection.OUT,
-                type = DestinationType.SINGLE,
-                appName = "lxmf",
-                aspects = arrayOf("delivery")
-            )
-            val fields = RoverCodec.encodePing(hashes).toMutableMap()
-            val message = LXMessage.create(
-                destination = serverDest,
-                source = sourceDest,
-                title = "",
-                content = "",
-                fields = fields,
-                desiredMethod = null
-            )
-            router.handleOutbound(message)
-            Log.i(TAG, "PING sent hashes=$hashes")
-        } catch (e: Exception) {
-            Log.e(TAG, "sendPing failed: ${e.message}", e)
-        }
+    suspend fun sendRegister(destHash: String, serverPkBase64: String, uid: String) {
+        sendMessage(
+            serverPkBase64 = serverPkBase64,
+            fields = RoverCodec.encodeRegister(uid),
+            logTag = "REGISTER",
+            awaitPath = true,
+            onDelivered = { Log.i(TAG, "REGISTER delivered") },
+            onFailed = { Log.e(TAG, "REGISTER delivery failed") }
+        )
     }
 
     suspend fun sendReq(destHash: String, serverPkBase64: String, section: String) {
-        val router = lxmRouter ?: run {
-            Log.e(TAG, "sendReq: LXMRouter not ready"); return
-        }
-        val sourceDest = deliveryDestination ?: run {
-            Log.e(TAG, "sendReq: no delivery destination"); return
-        }
-        try {
-            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
-            val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
-            val serverDest = Destination.create(
-                identity = serverIdentity,
-                direction = DestinationDirection.OUT,
-                type = DestinationType.SINGLE,
-                appName = "lxmf",
-                aspects = arrayOf("delivery")
-            )
-            val fields = RoverCodec.encodeReq(section).toMutableMap()
-            val message = LXMessage.create(
-                destination = serverDest,
-                source = sourceDest,
-                title = "",
-                content = "",
-                fields = fields,
-                desiredMethod = null
-            )
-            router.handleOutbound(message)
-            Log.i(TAG, "REQ sent section=$section")
-        } catch (e: Exception) {
-            Log.e(TAG, "sendReq failed: ${e.message}", e)
-        }
+        sendMessage(
+            serverPkBase64 = serverPkBase64,
+            fields = RoverCodec.encodeReq(section),
+            logTag = "REQ(section=$section)",
+            awaitPath = true
+        )
+    }
+
+    suspend fun sendPing(destHash: String, serverPkBase64: String, hashes: Map<String, String>) {
+        sendMessage(
+            serverPkBase64 = serverPkBase64,
+            fields = RoverCodec.encodePing(hashes),
+            logTag = "PING",
+            awaitPath = true
+        )
+    }
+
+    suspend fun sendCmd(destHash: String, serverPkBase64: String, fields: Map<Int, Any>) {
+        sendMessage(
+            serverPkBase64 = serverPkBase64,
+            fields = fields,
+            logTag = "CMD",
+            awaitPath = false,  // CMD отправляем сразу — интерактивное действие
+            onFailed = { Log.e(TAG, "CMD delivery failed fields=$fields") }
+        )
     }
 
     fun stop() {
