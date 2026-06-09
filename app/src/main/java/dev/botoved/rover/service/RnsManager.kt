@@ -34,6 +34,8 @@ class RnsManager(
     private var bleDriver: AndroidBLEDriver? = null
     private var bleInterface: BLEInterface? = null
     private var tcpInterface: TCPClientInterface? = null
+    var isTcpAdded: Boolean = false
+        private set
     var lxmRouter: LXMRouter? = null
         private set
     var deliveryDestination: Destination? = null
@@ -130,6 +132,7 @@ class RnsManager(
                 targetPort = port,
             )
             tcpInterface = iface
+            isTcpAdded = true
             iface.start()
             rns.addInterface(iface)
             Transport.registerInterface(iface.toRef())
@@ -293,6 +296,7 @@ class RnsManager(
         bleInterface = null
         bleDriver = null
         tcpInterface = null
+        isTcpAdded = false
         reticulum = null
     }
 }

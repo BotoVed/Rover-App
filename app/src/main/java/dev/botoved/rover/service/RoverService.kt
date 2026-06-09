@@ -18,6 +18,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
@@ -28,6 +30,10 @@ class RoverService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val rnsManagerReady = CompletableDeferred<RnsManager>()
     private var rnsManager: RnsManager? = null
+
+    @Volatile
+    private var isServerOnline = false
+    private var lastPongTime = 0L
 
     private val cmdReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -179,6 +185,8 @@ class RoverService : Service() {
                         }
                         6 -> {
                             Log.i(TAG, "PING/PONG received — link alive")
+                            lastPongTime = System.currentTimeMillis()
+                            isServerOnline = true
                             val channel = manager.getActiveChannel(applicationContext)
                             val pongIntent = Intent("dev.botoved.rover.ACTION_PONG").apply {
                                 putExtra("channel", channel)
@@ -226,6 +234,38 @@ class RoverService : Service() {
                     }
                 } else {
                     updateNotification("Подключение...")
+                }
+                serviceScope.launch {
+                    while (isActive) {
+                        delay(30_000)
+                        val elapsed = System.currentTimeMillis() - lastPongTime
+                        if (elapsed > 30_000 && isServerOnline) {
+                            isServerOnline = false
+                            Log.w(TAG, "Watchdog: no PONG for ${elapsed}ms, marking offline")
+                        }
+                        if (!isServerOnline) {
+                            val wPrefs = ServerPreferences(applicationContext)
+                            val wDst = wPrefs.serverDestHash.first() ?: continue
+                            val wPk = wPrefs.serverPk.first() ?: continue
+                            val wUid = wPrefs.uid.first() ?: ""
+                            val wTcp = wPrefs.serverTcp.first()
+                            val wSsid = wPrefs.serverSsid.first()
+
+                            if (!manager.isTcpAdded && wTcp != null && wSsid != null) {
+                                if (WifiChecker.isOnSsid(applicationContext, wSsid)) {
+                                    val parts = wTcp.split(":")
+                                    if (parts.size == 2) {
+                                        manager.addTcpInterfaceAndWait(
+                                            parts[0], parts[1].toIntOrNull() ?: 4242
+                                        )
+                                    }
+                                }
+                            }
+
+                            Log.i(TAG, "Watchdog: server offline, retrying REGISTER")
+                            manager.sendRegister(wDst, wPk, wUid)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "RNS init failed: ${e.message}", e)
