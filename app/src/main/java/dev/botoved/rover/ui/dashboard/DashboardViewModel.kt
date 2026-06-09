@@ -201,23 +201,31 @@ class DashboardViewModel(
     }
 
     private fun parseIsOn(fields: Map<*, *>): Boolean? {
-        val rawV = fields["1"] ?: fields[1L] ?: fields[1]
-        val v = rawV
-        Log.i("Rover", "parseIsOn fields keys=${fields.keys} rawV=$rawV v=$v")
-        return when (v) {
-            is String -> v == "on" || v == "open" || v == "playing" || v == "unlocked"
+        // PUSH: integer key 1 = v
+        // STATUS: string key "v"
+        val v = fields["v"] ?: fields["1"] ?: fields[1] ?: return null
+        Log.i("Rover", "parseIsOn fields keys=${fields.keys} v=$v")
+        return when (v.toString()) {
+            "on", "open", "playing", "unlocked", "true" -> true
+            "off", "closed", "idle", "locked", "false", "paused", "standby" -> false
             else -> null
         }
     }
 
     private fun parsePrimaryValue(fields: Map<*, *>): String? {
-        (fields["6"] ?: fields[6])?.let { return "${it}°C" }
-        (fields["2"] ?: fields[2])?.let { return "${it}%" }
-        (fields["5"] ?: fields[5])?.let { return "${it}%" }
-        (fields["14"] ?: fields[14])?.let { return "${it}%" }
-        (fields["21"] ?: fields[21])?.let { return "${it}%" }
-        val v = fields["1"] ?: fields[1]
-        val u = fields["25"] ?: fields[25]
+        // Temperature (CL): key "t" or 6
+        (fields["t"] ?: fields["6"] ?: fields[6])?.let { return "${it}°C" }
+        // Brightness (LT): key "b" or 2
+        (fields["b"] ?: fields["2"] ?: fields[2])?.let { return "${it}%" }
+        // Position (CV): key "p" or 5
+        (fields["p"] ?: fields["5"] ?: fields[5])?.let { return "${it}%" }
+        // Volume (MS): key "vol" or 14
+        (fields["vol"] ?: fields["14"] ?: fields[14])?.let { return "${it}%" }
+        // Fan speed (FN): key "sp" or 21
+        (fields["sp"] ?: fields["21"] ?: fields[21])?.let { return "${it}%" }
+        // Primary value + unit (SE, others): key "v"/"1" + "u"/"25"
+        val v = fields["v"] ?: fields["1"] ?: fields[1]
+        val u = fields["u"] ?: fields["25"] ?: fields[25]
         if (v != null) return if (u != null) "$v $u" else "$v"
         return null
     }
