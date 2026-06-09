@@ -211,7 +211,7 @@ class RoverService : Service() {
                                     Log.i(TAG, "Auto-reconnect TCP online=$online")
                                 }
                             } else {
-                                Log.i(TAG, "Auto-reconnect: not on WiFi $ssid, using BLE only")
+                                Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
                             }
                         }
                         manager.sendRegister(dst, pk, uid ?: "")

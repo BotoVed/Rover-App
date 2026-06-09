@@ -101,8 +101,8 @@ class RnsManager(
             val tp = (f?.get(0) as? Number)?.toInt()
             Log.i(TAG, "LXMF received tp=$tp")
             when (tp) {
-                4 -> {
-                    Log.i(TAG, "CONFIG received — onboarding approved!")
+                1, 4 -> {
+                    Log.i(TAG, "CONFIG received — tp=$tp")
                     onConfigReceived?.invoke(fields)
                 }
                 else -> {
@@ -185,6 +185,28 @@ class RnsManager(
 
             Log.i(TAG, "Server destination hash: ${serverDest.hexHash}")
             Log.i(TAG, "Expected hash from QR: $destHash")
+
+            // Ждём установки пути к серверу перед отправкой REGISTER
+            val destHashBytes = serverDest.hash
+            if (destHashBytes != null) {
+                if (!Transport.hasPath(destHashBytes)) {
+                    Log.i(TAG, "No path to server yet, requesting...")
+                    Transport.requestPath(destHashBytes)
+                    val pathDeadline = System.currentTimeMillis() + 15_000
+                    while (System.currentTimeMillis() < pathDeadline) {
+                        if (Transport.hasPath(destHashBytes)) {
+                            Log.i(TAG, "Path established, sending REGISTER")
+                            break
+                        }
+                        delay(100)
+                    }
+                    if (!Transport.hasPath(destHashBytes)) {
+                        Log.w(TAG, "Path not established after 15s, sending REGISTER anyway")
+                    }
+                } else {
+                    Log.i(TAG, "Path to server already known, sending REGISTER")
+                }
+            }
 
             val fields: MutableMap<Int, Any> = RoverCodec.encodeRegister(uid).toMutableMap()
 
