@@ -13,6 +13,7 @@ import android.util.Log
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dev.botoved.rover.data.RoverRepository
 import dev.botoved.rover.data.ServerPreferences
+import dev.botoved.rover.rover.protocol.RoverCodec
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -111,12 +112,17 @@ class RoverService : Service() {
                 manager.onConfigReceived = { fields ->
                     val section = fields?.get(1) as? String
                     val data = fields?.get(3)
+                    val sectionHash = fields?.get(2) as? String
                     Log.i(TAG, "CONFIG section=$section dataType=${data?.javaClass?.simpleName}")
                     if (data != null) Log.i(TAG, "CONFIG data preview=${
                         if (data is List<*>) "list(${data.size})"
                         else if (data is Map<*, *>) "map(${data.size} keys)"
                         else data.toString().take(100)
                     }")
+                    if (section != null && sectionHash != null) {
+                        repository.saveSectionHash(section, sectionHash)
+                        Log.i(TAG, "CONFIG saved hash section=$section hash=$sectionHash")
+                    }
                     serviceScope.launch {
                         when (section) {
                             "m" -> repository.saveMeta(fields ?: emptyMap<Any, Any>())
@@ -193,6 +199,23 @@ class RoverService : Service() {
                             }
                             LocalBroadcastManager.getInstance(this@RoverService)
                                 .sendBroadcast(pongIntent)
+
+                            val pongHashes = RoverCodec.decodeHashes(f ?: emptyMap<Any, Any>())
+                            if (pongHashes != null) {
+                                serviceScope.launch {
+                                    val pPrefs = ServerPreferences(this@RoverService)
+                                    val dst = pPrefs.serverDestHash.first() ?: return@launch
+                                    val pk = pPrefs.serverPk.first() ?: return@launch
+                                    for (section in listOf("m", "a", "d")) {
+                                        val local = repository.getSectionHash(section)
+                                        val remote = pongHashes[section]
+                                        if (remote != null && local != remote) {
+                                            Log.i(TAG, "Hash mismatch section=$section local=$local remote=$remote -> REQ")
+                                            manager.sendReq(dst, pk, section)
+                                        }
+                                    }
+                                }
+                            }
                         }
                         else -> Log.i(TAG, "Message tp=$tp — unhandled")
                     }
@@ -209,7 +232,6 @@ class RoverService : Service() {
                     val pk = prefs.serverPk.first()
                     val tcp = prefs.serverTcp.first()
                     val ssid = prefs.serverSsid.first()
-                    val uid = prefs.uid.first()
                     Log.i(TAG, "Auto-reconnect: dst=$dst tcp=$tcp ssid=$ssid")
                     if (dst != null && pk != null) {
                         repository.resetConfigReceived()
@@ -228,8 +250,11 @@ class RoverService : Service() {
                                 Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
                             }
                         }
-                        manager.sendRegister(dst, pk, uid ?: "")
-                        Log.i(TAG, "Auto-reconnect: REGISTER sent")
+                        Log.i(TAG, "Auto-reconnect: sending REQ for all sections")
+                        for (section in listOf("m", "a", "d")) {
+                            manager.sendReq(dst, pk, section)
+                            delay(200)
+                        }
                         updateNotification("Подключено")
                     }
                 } else {
@@ -243,11 +268,10 @@ class RoverService : Service() {
                             isServerOnline = false
                             Log.w(TAG, "Watchdog: no PONG for ${elapsed}ms, marking offline")
                         }
-                        if (!isServerOnline) {
+                        if (!isServerOnline || !repository.isConfigReceived) {
                             val wPrefs = ServerPreferences(applicationContext)
                             val wDst = wPrefs.serverDestHash.first() ?: continue
                             val wPk = wPrefs.serverPk.first() ?: continue
-                            val wUid = wPrefs.uid.first() ?: ""
                             val wTcp = wPrefs.serverTcp.first()
                             val wSsid = wPrefs.serverSsid.first()
 
@@ -262,8 +286,16 @@ class RoverService : Service() {
                                 }
                             }
 
-                            Log.i(TAG, "Watchdog: server offline, retrying REGISTER")
-                            manager.sendRegister(wDst, wPk, wUid)
+                            if (!repository.isConfigReceived) {
+                                Log.i(TAG, "Watchdog: no config, sending REQ for all sections")
+                                for (section in listOf("m", "a", "d")) {
+                                    manager.sendReq(wDst, wPk, section)
+                                    delay(200)
+                                }
+                            } else {
+                                Log.i(TAG, "Watchdog: offline, sending PING")
+                                manager.sendPing(wDst, wPk, repository.getSectionHashes())
+                            }
                         }
                     }
                 }

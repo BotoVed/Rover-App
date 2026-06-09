@@ -18,6 +18,19 @@ object RoverCodec {
         return mapOf(0 to MessageTypes.REGISTER, 1 to uid)
     }
 
+    fun encodePing(hashes: Map<String, String>): Map<Int, Any> =
+        mapOf(0 to MessageTypes.PING, 2 to hashes)
+
+    fun encodeReq(section: String): Map<Int, Any> =
+        mapOf(0 to MessageTypes.REQ, 5 to section)
+
+    fun decodeHashes(fields: Map<*, *>): Map<String, String>? {
+        val h = fields[2] as? Map<*, *> ?: return null
+        return h.entries
+            .mapNotNull { (k, v) -> (k as? String)?.let { it to v.toString() } }
+            .toMap()
+    }
+
     fun decodeTp(fields: Map<*, *>?): Int? {
         return (fields?.get(0) as? Number)?.toInt()
     }

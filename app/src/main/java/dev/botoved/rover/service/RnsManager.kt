@@ -285,6 +285,72 @@ class RnsManager(
         }
     }
 
+    suspend fun sendPing(destHash: String, serverPkBase64: String, hashes: Map<String, String>) {
+        val router = lxmRouter ?: run {
+            Log.e(TAG, "sendPing: LXMRouter not ready"); return
+        }
+        val sourceDest = deliveryDestination ?: run {
+            Log.e(TAG, "sendPing: no delivery destination"); return
+        }
+        try {
+            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
+            val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
+            val serverDest = Destination.create(
+                identity = serverIdentity,
+                direction = DestinationDirection.OUT,
+                type = DestinationType.SINGLE,
+                appName = "lxmf",
+                aspects = arrayOf("delivery")
+            )
+            val fields = RoverCodec.encodePing(hashes).toMutableMap()
+            val message = LXMessage.create(
+                destination = serverDest,
+                source = sourceDest,
+                title = "",
+                content = "",
+                fields = fields,
+                desiredMethod = null
+            )
+            router.handleOutbound(message)
+            Log.i(TAG, "PING sent hashes=$hashes")
+        } catch (e: Exception) {
+            Log.e(TAG, "sendPing failed: ${e.message}", e)
+        }
+    }
+
+    suspend fun sendReq(destHash: String, serverPkBase64: String, section: String) {
+        val router = lxmRouter ?: run {
+            Log.e(TAG, "sendReq: LXMRouter not ready"); return
+        }
+        val sourceDest = deliveryDestination ?: run {
+            Log.e(TAG, "sendReq: no delivery destination"); return
+        }
+        try {
+            val pubKeyBytes = Base64.decode(serverPkBase64, Base64.DEFAULT)
+            val serverIdentity = Identity.fromPublicKey(pubKeyBytes, defaultCryptoProvider())
+            val serverDest = Destination.create(
+                identity = serverIdentity,
+                direction = DestinationDirection.OUT,
+                type = DestinationType.SINGLE,
+                appName = "lxmf",
+                aspects = arrayOf("delivery")
+            )
+            val fields = RoverCodec.encodeReq(section).toMutableMap()
+            val message = LXMessage.create(
+                destination = serverDest,
+                source = sourceDest,
+                title = "",
+                content = "",
+                fields = fields,
+                desiredMethod = null
+            )
+            router.handleOutbound(message)
+            Log.i(TAG, "REQ sent section=$section")
+        } catch (e: Exception) {
+            Log.e(TAG, "sendReq failed: ${e.message}", e)
+        }
+    }
+
     fun stop() {
         Log.i(TAG, "Stopping RNS stack")
         lxmRouter?.stop()

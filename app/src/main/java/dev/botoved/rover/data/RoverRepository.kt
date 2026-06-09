@@ -9,6 +9,11 @@ class RoverRepository(private val db: RoverDatabase) {
     private val TAG = "Rover"
     private var _configReceived = false
     val isConfigReceived: Boolean get() = _configReceived
+    private val _sectionHashes = mutableMapOf<String, String>()
+
+    fun saveSectionHash(section: String, hash: String) { _sectionHashes[section] = hash }
+    fun getSectionHash(section: String): String? = _sectionHashes[section]
+    fun getSectionHashes(): Map<String, String> = _sectionHashes.toMap()
 
     fun markConfigReceived() {
         _configReceived = true
