@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import dev.botoved.rover.data.ServerPreferences
+import dev.botoved.rover.service.WifiChecker
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -62,7 +63,7 @@ class OnboardingViewModel(
 
             Log.i(TAG, "QR v2 parsed: dst=$dst nm=$nm tcp=$tcp ssid=$ssid uid=$uid")
             viewModelScope.launch {
-                _state.value = OnboardingState.Sending(noWifi = tcp != null && ssid != null)
+                _state.value = OnboardingState.Sending(noWifi = tcp != null && ssid != null && !WifiChecker.isOnSsid(context, ssid))
                 delay(100)
                 prefs.saveServer(dst, nm, pk, tcp, ssid)
                 prefs.saveUid(uid)
@@ -78,7 +79,7 @@ class OnboardingViewModel(
                 Log.i(TAG, "ACTION_REGISTER broadcast sent")
                 _state.value = OnboardingState.WaitingApproval(
                     step = "Запрос отправлен, ожидаем сервер...",
-                    noWifi = tcp != null && ssid != null
+                    noWifi = tcp != null && ssid != null && !WifiChecker.isOnSsid(context, ssid)
                 )
 
                 approvalTimeoutJob?.cancel()
