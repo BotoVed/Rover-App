@@ -1,0 +1,42 @@
+From f2a419664f07fd080bee33d100657f00bbf38b99 Mon Sep 17 00:00:00 2001
+From: BotoVed <50742084+BotoVed@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 20:53:41 +0300
+Subject: [PATCH] fix: remove 0-byte ratchet files before LXMRouter init
+ (prevents app hang)
+
+---
+ .../main/java/dev/botoved/rover/service/RnsManager.kt | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/app/src/main/java/dev/botoved/rover/service/RnsManager.kt b/app/src/main/java/dev/botoved/rover/service/RnsManager.kt
+index dbdb364..0b03d72 100644
+--- a/app/src/main/java/dev/botoved/rover/service/RnsManager.kt
++++ b/app/src/main/java/dev/botoved/rover/service/RnsManager.kt
+@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothManager
+ import android.content.Context
+ import android.util.Base64
+ import android.util.Log
++import java.io.File
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.flow.launchIn
+@@ -80,6 +81,16 @@ class RnsManager(
+         rns.addInterface(iface)
+         Log.i(TAG, "BLE interface started")
+ 
++        val ratchetDir = File(configDir, "lxmf_storage/lxmf/ratchets")
++        if (ratchetDir.isDirectory) {
++            ratchetDir.listFiles()?.forEach { f ->
++                if (f.name.endsWith(".ratchets") && f.exists() && f.length() == 0L) {
++                    f.delete()
++                    Log.w(TAG, "Removed 0-byte ratchet file: ${f.name}")
++                }
++            }
++        }
++
+         val router = LXMRouter(
+             identity = identity,
+             storagePath = configDir,
+-- 
+2.43.0
+
