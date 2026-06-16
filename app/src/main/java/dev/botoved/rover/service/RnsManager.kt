@@ -128,6 +128,7 @@ class RnsManager(
     }
 
     fun startChannelController(host: String, port: Int) {
+        channelController?.stop()
         val controller = ChannelController(
             scope = scope,
             context = context,
@@ -153,7 +154,6 @@ class RnsManager(
 
     private suspend fun recreateBleInterface() {
         bleDriver?.let {
-            Transport.getInterfaces().toList().forEach { Transport.deregisterInterface(it) }
             it.shutdown()
         }
         val btManager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
@@ -169,7 +169,6 @@ class RnsManager(
 
     private suspend fun destroyBleInterface() {
         bleInterface?.let { iface ->
-            Transport.getInterfaces().toList().forEach { Transport.deregisterInterface(it) }
             iface.detach()
             bleDriver?.shutdown()
             bleInterface = null
