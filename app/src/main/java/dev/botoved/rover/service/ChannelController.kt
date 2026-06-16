@@ -10,11 +10,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import network.reticulum.Reticulum
 import network.reticulum.interfaces.tcp.TCPClientInterface
 import network.reticulum.interfaces.toRef
 import network.reticulum.transport.Transport
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
 
@@ -49,29 +52,31 @@ class ChannelController(
     private var periodicJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    fun probeTcp(): Boolean {
-        return try {
-            val socket = Socket()
-            socket.connect(java.net.InetSocketAddress(host, port), PROBE_TIMEOUT_MS.toInt())
-            socket.close()
-            Log.i(TAG, "TCP probe OK: $host:$port")
-            true
-        } catch (e: SocketTimeoutException) {
-            Log.w(TAG, "TCP probe timeout: $host:$port")
-            false
-        } catch (e: Exception) {
-            Log.w(TAG, "TCP probe failed: ${e.message}")
-            false
+    suspend fun probeTcp(): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val socket = Socket()
+                socket.connect(InetSocketAddress(host, port), PROBE_TIMEOUT_MS.toInt())
+                socket.close()
+                Log.i(TAG, "TCP probe OK: $host:$port")
+                true
+            } catch (e: SocketTimeoutException) {
+                Log.w(TAG, "TCP probe timeout: $host:$port")
+                false
+            } catch (e: Exception) {
+                Log.w(TAG, "TCP probe failed: ${e.message}")
+                false
+            }
         }
     }
 
-    private fun determineBestTcpChannel(): Channel {
-        val network = cm.activeNetwork
-        val caps = network?.let { cm.getNetworkCapabilities(it) }
-        return if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
-            Channel.WiFi
-        } else {
-            Channel.Mobile4G
+    private fun determineBestTcpChannel(): Channel? {
+        val network = cm.activeNetwork ?: return null
+        val caps = cm.getNetworkCapabilities(network)
+        return when {
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true -> Channel.WiFi
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true -> Channel.Mobile4G
+            else -> null
         }
     }
 
@@ -133,7 +138,10 @@ class ChannelController(
                         if (currentChannel !is Channel.WiFi) {
                             scope.launch {
                                 if (probeTcp()) {
-                                    switchTo(determineBestTcpChannel())
+                                    val best = determineBestTcpChannel()
+                                    if (best != null) {
+                                        switchTo(best)
+                                    }
                                 }
                             }
                         }
@@ -143,10 +151,29 @@ class ChannelController(
                         if (currentChannel !is Channel.WiFi && currentChannel !is Channel.Mobile4G) {
                             scope.launch {
                                 if (probeTcp()) {
-                                    switchTo(determineBestTcpChannel())
+                                    val best = determineBestTcpChannel()
+                                    if (best != null) {
+                                        switchTo(best)
+                                    }
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                val caps = cm.getNetworkCapabilities(network)
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
+                    Log.w(TAG, "WiFi lost")
+                    if (currentChannel is Channel.WiFi) {
+                        // TCP monitor will handle fallback
+                    }
+                }
+                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) {
+                    Log.w(TAG, "Cellular lost")
+                    if (currentChannel is Channel.Mobile4G) {
+                        // TCP monitor will handle fallback
                     }
                 }
             }
@@ -167,7 +194,10 @@ class ChannelController(
                 delay(PERIODIC_INTERVAL_MS)
                 if (currentChannel is Channel.BLE || currentChannel is Channel.LoRa) {
                     if (probeTcp()) {
-                        switchTo(determineBestTcpChannel())
+                        val best = determineBestTcpChannel()
+                        if (best != null) {
+                            switchTo(best)
+                        }
                     }
                 }
             }
@@ -183,10 +213,17 @@ class ChannelController(
         Log.i(TAG, "ChannelController starting")
         startNetworkListener()
         startPeriodicProbe()
-        if (probeTcp()) {
-            switchTo(determineBestTcpChannel())
-        } else {
-            Log.i(TAG, "Initial TCP probe failed, no network available")
+        scope.launch {
+            if (probeTcp()) {
+                val best = determineBestTcpChannel()
+                if (best != null) {
+                    switchTo(best)
+                } else {
+                    Log.w(TAG, "No network available for TCP")
+                }
+            } else {
+                Log.i(TAG, "Initial TCP probe failed, no network available")
+            }
         }
     }
 
@@ -198,5 +235,6 @@ class ChannelController(
         detachAllInterfaces()
         tcpIface = null
         currentChannel = Channel.LoRa
+        onChannelChanged(Channel.LoRa)
     }
 }
