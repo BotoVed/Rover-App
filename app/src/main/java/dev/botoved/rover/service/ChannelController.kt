@@ -186,7 +186,7 @@ class ChannelController(
         if (probeTcp()) {
             switchTo(determineBestTcpChannel())
         } else {
-            Log.i(TAG, "Initial TCP probe failed, staying on BLE")
+            Log.i(TAG, "Initial TCP probe failed, no network available")
         }
     }
 
