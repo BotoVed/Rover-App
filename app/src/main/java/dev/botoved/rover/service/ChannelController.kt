@@ -52,7 +52,7 @@ class ChannelController(
     private var periodicJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    suspend fun probeTcp(): Boolean {
+    private suspend fun probeTcp(): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val socket = Socket()
@@ -90,12 +90,18 @@ class ChannelController(
     private fun startTcpOnlineMonitor() {
         onlineMonitorJob?.cancel()
         onlineMonitorJob = scope.launch {
+            var consecutiveOffline = 0
             while (isActive) {
                 delay(ONLINE_MONITOR_INTERVAL_MS)
                 val online = tcpIface?.online?.value == true
-                if (!online && (currentChannel is Channel.WiFi || currentChannel is Channel.Mobile4G)) {
-                    Log.w(TAG, "TCP interface offline, switching to BLE")
-                    switchTo(Channel.BLE)
+                if (online) {
+                    consecutiveOffline = 0
+                } else if (currentChannel is Channel.WiFi || currentChannel is Channel.Mobile4G) {
+                    consecutiveOffline++
+                    if (consecutiveOffline >= 3) {
+                        Log.w(TAG, "TCP offline for ${consecutiveOffline * ONLINE_MONITOR_INTERVAL_MS}ms, switching to BLE")
+                        switchTo(Channel.BLE)
+                    }
                 }
             }
         }
@@ -164,17 +170,11 @@ class ChannelController(
 
             override fun onLost(network: Network) {
                 val caps = cm.getNetworkCapabilities(network)
-                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) {
-                    Log.w(TAG, "WiFi lost")
-                    if (currentChannel is Channel.WiFi) {
-                        // TCP monitor will handle fallback
-                    }
-                }
-                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true) {
-                    Log.w(TAG, "Cellular lost")
-                    if (currentChannel is Channel.Mobile4G) {
-                        // TCP monitor will handle fallback
-                    }
+                when {
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true ->
+                        Log.w(TAG, "WiFi lost, TCP monitor will handle fallback")
+                    caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true ->
+                        Log.w(TAG, "Cellular lost, TCP monitor will handle fallback")
                 }
             }
         }

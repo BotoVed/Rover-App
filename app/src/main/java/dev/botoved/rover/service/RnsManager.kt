@@ -153,9 +153,13 @@ class RnsManager(
     }
 
     private suspend fun recreateBleInterface() {
-        bleDriver?.let {
-            it.shutdown()
+        bleInterface?.let { old ->
+            Transport.getInterfaces().toList().forEach { ref ->
+                if (ref.name == old.name) Transport.deregisterInterface(ref)
+            }
+            old.detach()
         }
+        bleDriver?.shutdown()
         val btManager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
         val driver = AndroidBLEDriver(context, btManager, scope)
         bleDriver = driver
