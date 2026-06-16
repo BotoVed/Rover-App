@@ -63,24 +63,9 @@ class RoverService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val dst = intent?.getStringExtra("dst") ?: return
             val pk = intent.getStringExtra("pk") ?: return
-            val tcp = intent.getStringExtra("tcp")
-            val ssid = intent.getStringExtra("ssid")
             val uid = intent.getStringExtra("uid") ?: ""
-
             serviceScope.launch {
                 val manager = rnsManagerReady.await()
-                if (tcp != null && ssid != null) {
-                    if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
-                        val parts = tcp.split(":")
-                        if (parts.size == 2) {
-                            manager.startChannelController(
-                                parts[0], parts[1].toIntOrNull() ?: 4242,
-                            )
-                        }
-                    } else {
-                        Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
-                    }
-                }
                 manager.sendRegister(dst, pk, uid)
             }
         }
@@ -221,32 +206,30 @@ class RoverService : Service() {
                 rnsManager = manager
                 rnsManagerReady.complete(manager)
 
-                // Auto-reconnect if already registered
                 val prefs = ServerPreferences(applicationContext)
+
+                // Start ChannelController for automatic interface management
+                val tcpPref: String? = prefs.serverTcp.first()
+                if (tcpPref != null) {
+                    val parts = tcpPref.split(":")
+                    if (parts.size == 2) {
+                        val tcpHost = parts[0]
+                        val tcpPort = parts[1].toIntOrNull() ?: 4242
+                        manager.startChannelController(tcpHost, tcpPort)
+                        Log.i(TAG, "ChannelController started: $tcpHost:$tcpPort")
+                    }
+                }
+
+                // Auto-reconnect if already registered
                 val reg = prefs.isRegistered.first()
                 if (reg == "approved") {
                     val dst = prefs.serverDestHash.first()
                     val pk = prefs.serverPk.first()
-                    val tcp = prefs.serverTcp.first()
-                    val ssid = prefs.serverSsid.first()
-                    Log.i(TAG, "Auto-reconnect: dst=$dst tcp=$tcp ssid=$ssid")
+                    Log.i(TAG, "Auto-reconnect: dst=$dst")
                     if (dst != null && pk != null) {
                         repository.resetConfigReceived()
                         repository.clearAll()
-                        Log.i(TAG, "Auto-reconnect: DB cleared")
-                        if (tcp != null && ssid != null) {
-                            if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
-                                val parts = tcp.split(":")
-                                if (parts.size == 2) {
-                                    manager.startChannelController(
-                                        parts[0], parts[1].toIntOrNull() ?: 4242
-                                    )
-                                }
-                            } else {
-                                Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
-                            }
-                        }
-                        Log.i(TAG, "Auto-reconnect: sending REQ for all sections")
+                        Log.i(TAG, "Auto-reconnect: DB cleared, sending REQ for all sections")
                         for (section in listOf("m", "a", "d")) {
                             manager.sendReq(dst, pk, section)
                             delay(200)
@@ -268,20 +251,6 @@ class RoverService : Service() {
                             val wPrefs = ServerPreferences(applicationContext)
                             val wDst = wPrefs.serverDestHash.first() ?: continue
                             val wPk = wPrefs.serverPk.first() ?: continue
-                            val wTcp = wPrefs.serverTcp.first()
-                            val wSsid = wPrefs.serverSsid.first()
-
-                            if (wTcp != null && wSsid != null) {
-                                if (WifiChecker.isOnSsid(applicationContext, wSsid)) {
-                                    val parts = wTcp.split(":")
-                                    if (parts.size == 2) {
-                                        manager.startChannelController(
-                                            parts[0], parts[1].toIntOrNull() ?: 4242
-                                        )
-                                    }
-                                }
-                            }
-
                             if (!repository.isConfigReceived) {
                                 Log.i(TAG, "Watchdog: no config, sending REQ for all sections")
                                 for (section in listOf("m", "a", "d")) {
