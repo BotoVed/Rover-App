@@ -107,31 +107,35 @@ class ChannelController(
         }
     }
 
+    private val switchLock = Any()
+
     fun switchTo(new: Channel) {
-        if (new == currentChannel) return
-        Log.i(TAG, "Switching: ${currentChannel.label} → ${new.label}")
-        detachAllInterfaces()
-        tcpIface = null
-        onlineMonitorJob?.cancel()
-        when (new) {
-            is Channel.WiFi, is Channel.Mobile4G -> {
-                val iface = TCPClientInterface("rover-tcp", host, port)
-                tcpIface = iface
-                iface.start()
-                Reticulum.getInstance().addInterface(iface)
-                Transport.registerInterface(iface.toRef())
-                scope.launch { onBleDetach() }
-                startTcpOnlineMonitor()
+        synchronized(switchLock) {
+            if (new == currentChannel) return
+            Log.i(TAG, "Switching: ${currentChannel.label} → ${new.label}")
+            currentChannel = new
+            detachAllInterfaces()
+            tcpIface = null
+            onlineMonitorJob?.cancel()
+            when (new) {
+                is Channel.WiFi, is Channel.Mobile4G -> {
+                    val iface = TCPClientInterface("rover-tcp", host, port)
+                    tcpIface = iface
+                    iface.start()
+                    Reticulum.getInstance().addInterface(iface)
+                    Transport.registerInterface(iface.toRef())
+                    scope.launch { onBleDetach() }
+                    startTcpOnlineMonitor()
+                }
+                is Channel.BLE -> {
+                    scope.launch { onBleNeeded() }
+                }
+                is Channel.LoRa -> {
+                    scope.launch { onBleDetach() }
+                }
             }
-            is Channel.BLE -> {
-                scope.launch { onBleNeeded() }
-            }
-            is Channel.LoRa -> {
-                scope.launch { onBleDetach() }
-            }
+            onChannelChanged(new)
         }
-        currentChannel = new
-        onChannelChanged(new)
     }
 
     fun startNetworkListener() {

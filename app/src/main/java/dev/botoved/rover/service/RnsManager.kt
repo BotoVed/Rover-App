@@ -6,6 +6,8 @@ import android.util.Base64
 import android.util.Log
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
@@ -33,6 +35,7 @@ class RnsManager(
     private var reticulum: Reticulum? = null
     private var bleDriver: AndroidBLEDriver? = null
     private var bleInterface: BLEInterface? = null
+    private var bleScope: CoroutineScope? = null
     private var channelController: ChannelController? = null
     var lxmRouter: LXMRouter? = null
         private set
@@ -55,10 +58,12 @@ class RnsManager(
         Log.i(TAG, "Reticulum started")
 
         val btManager = context.getSystemService(BluetoothManager::class.java)
+        val bScope = CoroutineScope(scope.coroutineContext + Job())
+        bleScope = bScope
         val driver = AndroidBLEDriver(
             context = context,
             bluetoothManager = btManager,
-            scope = scope
+            scope = bScope
         )
         bleDriver = driver
 
@@ -66,7 +71,7 @@ class RnsManager(
             .onEach { peer ->
                 Log.i(TAG, "BLE peer discovered: ${peer.address}")
             }
-            .launchIn(scope)
+            .launchIn(bScope)
 
         val iface = BLEInterface(
             name = "rover-ble",
@@ -159,9 +164,11 @@ class RnsManager(
             }
             old.detach()
         }
-        bleDriver?.shutdown()
+        bleScope?.cancel()
         val btManager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
-        val driver = AndroidBLEDriver(context, btManager, scope)
+        val bScope = CoroutineScope(scope.coroutineContext + Job())
+        bleScope = bScope
+        val driver = AndroidBLEDriver(context, btManager, bScope)
         bleDriver = driver
         val iface = BLEInterface("rover-ble", driver, transportIdentity = byteArrayOf())
         bleInterface = iface
@@ -174,9 +181,10 @@ class RnsManager(
     private suspend fun destroyBleInterface() {
         bleInterface?.let { iface ->
             iface.detach()
-            bleDriver?.shutdown()
-            bleInterface = null
+            bleScope?.cancel()
+            bleScope = null
             bleDriver = null
+            bleInterface = null
             Log.i(TAG, "BLE interface destroyed")
         }
     }
@@ -310,13 +318,14 @@ class RnsManager(
         channelController?.stop()
         lxmRouter?.stop()
         bleInterface?.detach()
-        bleDriver?.shutdown()
+        bleScope?.cancel()
+        bleScope = null
+        bleDriver = null
+        bleInterface = null
         Reticulum.stop()
         channelController = null
         lxmRouter = null
         deliveryDestination = null
-        bleInterface = null
-        bleDriver = null
         reticulum = null
     }
 }

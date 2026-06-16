@@ -22,7 +22,8 @@ class RoverRepository(private val db: RoverDatabase) {
 
     fun resetConfigReceived() {
         _configReceived = false
-        Log.i(TAG, "DB: config flag reset")
+        _sectionHashes.clear()
+        Log.i(TAG, "DB: config flag reset, section hashes cleared")
     }
 
     fun observeAreas(): Flow<List<AreaEntity>> = db.areaDao().observeAll()

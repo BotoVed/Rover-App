@@ -35,6 +35,8 @@ class RoverService : Service() {
     @Volatile
     private var isServerOnline = false
     private var lastPongTime = 0L
+    private var cachedServerDst: String? = null
+    private var cachedServerPk: String? = null
 
     private val cmdReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -184,16 +186,24 @@ class RoverService : Service() {
 
                             val pongHashes = RoverCodec.decodeHashes(f ?: emptyMap<Any, Any>())
                             if (pongHashes != null) {
-                                serviceScope.launch {
-                                    val pPrefs = ServerPreferences(this@RoverService)
-                                    val dst = pPrefs.serverDestHash.first() ?: return@launch
-                                    val pk = pPrefs.serverPk.first() ?: return@launch
-                                    for (section in listOf("m", "a", "d")) {
-                                        val local = repository.getSectionHash(section)
-                                        val remote = pongHashes[section]
-                                        if (remote != null && local != remote) {
-                                            Log.i(TAG, "Hash mismatch section=$section local=$local remote=$remote -> REQ")
-                                            manager.sendReq(dst, pk, section)
+                                val dst = cachedServerDst
+                                val pk = cachedServerPk
+                                if (dst != null && pk != null) {
+                                    serviceScope.launch {
+                                        for (section in listOf("m", "a", "d")) {
+                                            val local = repository.getSectionHash(section)
+                                            val remote = pongHashes[section]
+                                            if (remote != null && local != remote) {
+                                                Log.i(TAG, "Hash mismatch section=$section local=$local remote=$remote -> REQ")
+                                                manager.sendReq(dst, pk, section)
+                                            }
+                                        }
+                                        if (pongHashes.isEmpty() || repository.getSectionHashes().isEmpty()) {
+                                            Log.i(TAG, "PONG: hashes empty, sending REQ for all sections")
+                                            for (section in listOf("m", "a", "d")) {
+                                                manager.sendReq(dst, pk, section)
+                                                delay(200)
+                                            }
                                         }
                                     }
                                 }
@@ -223,18 +233,20 @@ class RoverService : Service() {
                 // Auto-reconnect if already registered
                 val reg = prefs.isRegistered.first()
                 if (reg == "approved") {
-                    val dst = prefs.serverDestHash.first()
-                    val pk = prefs.serverPk.first()
-                    Log.i(TAG, "Auto-reconnect: dst=$dst")
-                    if (dst != null && pk != null) {
+                    cachedServerDst = prefs.serverDestHash.first()
+                    cachedServerPk = prefs.serverPk.first()
+                    Log.i(TAG, "Auto-reconnect: dst=$cachedServerDst pk=$cachedServerPk")
+                    if (cachedServerDst != null && cachedServerPk != null) {
                         repository.resetConfigReceived()
                         repository.clearAll()
                         Log.i(TAG, "Auto-reconnect: DB cleared, sending REQ for all sections")
                         for (section in listOf("m", "a", "d")) {
-                            manager.sendReq(dst, pk, section)
+                            manager.sendReq(cachedServerDst!!, cachedServerPk!!, section)
                             delay(200)
                         }
                         updateNotification("Подключено")
+                    } else {
+                        Log.w(TAG, "Auto-reconnect: dst or pk is null, cannot send REQ")
                     }
                 } else {
                     updateNotification("Подключение...")
@@ -247,21 +259,27 @@ class RoverService : Service() {
                             isServerOnline = false
                             Log.w(TAG, "Watchdog: no PONG for ${elapsed}ms, marking offline")
                         }
+                        val dst = cachedServerDst
+                        val pk = cachedServerPk
                         if (!isServerOnline || !repository.isConfigReceived) {
-                            val wPrefs = ServerPreferences(applicationContext)
-                            val wDst = wPrefs.serverDestHash.first() ?: continue
-                            val wPk = wPrefs.serverPk.first() ?: continue
+                            if (dst == null || pk == null) {
+                                Log.w(TAG, "Watchdog: dst/pk not cached, retrying...")
+                                val wPrefs = ServerPreferences(applicationContext)
+                                cachedServerDst = wPrefs.serverDestHash.first()
+                                cachedServerPk = wPrefs.serverPk.first()
+                                continue
+                            }
                             if (!repository.isConfigReceived) {
                                 Log.i(TAG, "Watchdog: no config, sending REQ for all sections")
                                 for (section in listOf("m", "a", "d")) {
-                                    manager.sendReq(wDst, wPk, section)
+                                    manager.sendReq(dst, pk, section)
                                     delay(200)
                                 }
-                            } else {
-                                Log.i(TAG, "Watchdog: offline, sending PING")
-                                manager.sendPing(wDst, wPk, repository.getSectionHashes())
-                            }
+                        } else {
+                            Log.i(TAG, "Watchdog: sending PING")
+                            manager.sendPing(dst, pk, repository.getSectionHashes())
                         }
+                    }
                     }
                 }
             } catch (e: Exception) {
