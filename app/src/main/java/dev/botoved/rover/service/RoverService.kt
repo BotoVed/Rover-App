@@ -73,12 +73,9 @@ class RoverService : Service() {
                     if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
                         val parts = tcp.split(":")
                         if (parts.size == 2) {
-                            val online = manager.addTcpInterfaceAndWait(
+                            manager.startChannelController(
                                 parts[0], parts[1].toIntOrNull() ?: 4242,
                             )
-                            if (online != true) {
-                                Log.w(TAG, "TCP not online, REGISTER may fail")
-                            }
                         }
                     } else {
                         Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
@@ -193,7 +190,7 @@ class RoverService : Service() {
                             Log.i(TAG, "PING/PONG received — link alive")
                             lastPongTime = System.currentTimeMillis()
                             isServerOnline = true
-                            val channel = manager.getActiveChannel(applicationContext)
+                            val channel = manager.getActiveChannel()
                             val pongIntent = Intent("dev.botoved.rover.ACTION_PONG").apply {
                                 putExtra("channel", channel)
                             }
@@ -241,10 +238,9 @@ class RoverService : Service() {
                             if (WifiChecker.isOnSsid(this@RoverService, ssid)) {
                                 val parts = tcp.split(":")
                                 if (parts.size == 2) {
-                                    val online = manager.addTcpInterfaceAndWait(
+                                    manager.startChannelController(
                                         parts[0], parts[1].toIntOrNull() ?: 4242
                                     )
-                                    Log.i(TAG, "Auto-reconnect TCP online=$online")
                                 }
                             } else {
                                 Log.i(TAG, "Not on target WiFi ($ssid), skipping TCP")
@@ -275,11 +271,11 @@ class RoverService : Service() {
                             val wTcp = wPrefs.serverTcp.first()
                             val wSsid = wPrefs.serverSsid.first()
 
-                            if (!manager.isTcpAdded && wTcp != null && wSsid != null) {
+                            if (wTcp != null && wSsid != null) {
                                 if (WifiChecker.isOnSsid(applicationContext, wSsid)) {
                                     val parts = wTcp.split(":")
                                     if (parts.size == 2) {
-                                        manager.addTcpInterfaceAndWait(
+                                        manager.startChannelController(
                                             parts[0], parts[1].toIntOrNull() ?: 4242
                                         )
                                     }

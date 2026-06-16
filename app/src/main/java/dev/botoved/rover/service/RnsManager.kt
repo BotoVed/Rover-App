@@ -17,7 +17,6 @@ import network.reticulum.crypto.defaultCryptoProvider
 import network.reticulum.destination.Destination
 import network.reticulum.identity.Identity
 import network.reticulum.interfaces.ble.BLEInterface
-import network.reticulum.interfaces.tcp.TCPClientInterface
 import network.reticulum.interfaces.toRef
 import network.reticulum.transport.Transport
 import network.reticulum.lxmf.LXMessage
@@ -34,9 +33,7 @@ class RnsManager(
     private var reticulum: Reticulum? = null
     private var bleDriver: AndroidBLEDriver? = null
     private var bleInterface: BLEInterface? = null
-    private var tcpInterface: TCPClientInterface? = null
-    var isTcpAdded: Boolean = false
-        private set
+    private var channelController: ChannelController? = null
     var lxmRouter: LXMRouter? = null
         private set
     var deliveryDestination: Destination? = null
@@ -126,52 +123,58 @@ class RnsManager(
         Log.i(TAG, "LXMRouter started")
     }
 
-    suspend fun addTcpInterfaceAndWait(
-        host: String,
-        port: Int,
-        timeoutMs: Long = 15_000,
-    ): Boolean {
-        val rns = reticulum ?: return false
-        return try {
-            val iface = TCPClientInterface(
-                name = "rover-tcp",
-                targetHost = host,
-                targetPort = port,
-            )
-            tcpInterface = iface
-            isTcpAdded = true
-            iface.start()
-            rns.addInterface(iface)
-            Transport.registerInterface(iface.toRef())
-            Log.i(TAG, "TCP interface added: $host:$port, waiting for online...")
-
-            val deadline = System.currentTimeMillis() + timeoutMs
-            while (System.currentTimeMillis() < deadline) {
-                if (iface.online.value) {
-                    val elapsed = timeoutMs - (deadline - System.currentTimeMillis())
-                    Log.i(TAG, "TCP interface online after ${elapsed}ms")
-                    deliveryDestination?.announce()
-                    Log.i(TAG, "Delivery destination announced: ${deliveryDestination?.hexHash}")
-                    return true
-                }
-                delay(200)
-            }
-            Log.w(TAG, "TCP interface timeout — not online after ${timeoutMs}ms")
-            false
-        } catch (e: Exception) {
-            Log.e(TAG, "TCP interface failed: ${e.message}", e)
-            false
-        }
+    fun getActiveChannel(): String {
+        return channelController?.currentChannel?.label ?: "LoRa"
     }
 
-    fun getActiveChannel(context: Context): String {
-        val tcpOnline = tcpInterface?.online?.value == true
-        val bleOnline = bleInterface?.online?.value == true
-        return when {
-            tcpOnline && WifiChecker.isWifiConnected(context) -> "WiFi"
-            tcpOnline -> "4G"
-            bleOnline -> "BLE"
-            else -> "LoRa"
+    fun startChannelController(host: String, port: Int) {
+        val controller = ChannelController(
+            scope = scope,
+            context = context,
+            host = host,
+            port = port,
+            onBleNeeded = {
+                recreateBleInterface()
+            },
+            onBleDetach = {
+                destroyBleInterface()
+            },
+            onChannelChanged = { channel ->
+                Log.i(TAG, "Channel changed: ${channel.label}")
+                val intent = android.content.Intent("dev.botoved.rover.ACTION_PONG")
+                intent.putExtra("channel", channel.label)
+                androidx.localbroadcastmanager.content.LocalBroadcastManager
+                    .getInstance(context).sendBroadcast(intent)
+            }
+        )
+        channelController = controller
+        controller.start()
+    }
+
+    private suspend fun recreateBleInterface() {
+        bleDriver?.let {
+            Transport.getInterfaces().toList().forEach { Transport.deregisterInterface(it) }
+            it.shutdown()
+        }
+        val btManager = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
+        val driver = AndroidBLEDriver(context, btManager, scope)
+        bleDriver = driver
+        val iface = BLEInterface("rover-ble", driver, transportIdentity = byteArrayOf())
+        bleInterface = iface
+        iface.start()
+        Reticulum.getInstance().addInterface(iface)
+        Transport.registerInterface(iface.toRef())
+        Log.i(TAG, "BLE interface recreated")
+    }
+
+    private suspend fun destroyBleInterface() {
+        bleInterface?.let { iface ->
+            Transport.getInterfaces().toList().forEach { Transport.deregisterInterface(it) }
+            iface.detach()
+            bleDriver?.shutdown()
+            bleInterface = null
+            bleDriver = null
+            Log.i(TAG, "BLE interface destroyed")
         }
     }
 
@@ -301,16 +304,16 @@ class RnsManager(
 
     fun stop() {
         Log.i(TAG, "Stopping RNS stack")
+        channelController?.stop()
         lxmRouter?.stop()
         bleInterface?.detach()
         bleDriver?.shutdown()
         Reticulum.stop()
+        channelController = null
         lxmRouter = null
         deliveryDestination = null
         bleInterface = null
         bleDriver = null
-        tcpInterface = null
-        isTcpAdded = false
         reticulum = null
     }
 }
