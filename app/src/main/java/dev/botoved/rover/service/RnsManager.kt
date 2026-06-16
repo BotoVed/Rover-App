@@ -4,6 +4,7 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.util.Base64
 import android.util.Log
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
@@ -79,6 +80,16 @@ class RnsManager(
         iface.start()
         rns.addInterface(iface)
         Log.i(TAG, "BLE interface started")
+
+        val ratchetDir = File(configDir, "lxmf_storage/lxmf/ratchets")
+        if (ratchetDir.isDirectory) {
+            ratchetDir.listFiles()?.forEach { f ->
+                if (f.name.endsWith(".ratchets") && f.exists() && f.length() == 0L) {
+                    f.delete()
+                    Log.w(TAG, "Removed 0-byte ratchet file: ${f.name}")
+                }
+            }
+        }
 
         val router = LXMRouter(
             identity = identity,
