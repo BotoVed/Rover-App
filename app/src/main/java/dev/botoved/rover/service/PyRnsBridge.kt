@@ -148,8 +148,9 @@ class PyRnsBridge(private val context: Context) {
     fun sendPing(destHex: String, hashes: Map<*, *> = emptyMap<Any, Any>()): Boolean {
         val module = pyModule ?: return false
         return try {
-            val pyHashes = PyObject.fromJava(hashes)
-            val result = module.callAttr("send_ping", destHex, pyHashes)
+            val json = org.json.JSONObject()
+            hashes.forEach { (k, v) -> json.put(k.toString(), v) }
+            val result = module.callAttr("send_ping", destHex, json.toString())
             val ok = result.toString().toBoolean()
             AppLogger.i(TAG, "PyRNS sendPing dest=$destHex ok=$ok")
             ok
@@ -159,11 +160,23 @@ class PyRnsBridge(private val context: Context) {
         }
     }
 
+    fun sendCmd(destHex: String, fieldsJson: String): Boolean {
+        val module = pyModule ?: return false
+        return try {
+            val result = module.callAttr("send_cmd", destHex, fieldsJson)
+            val ok = result.toString().toBoolean()
+            AppLogger.i(TAG, "PyRNS sendCmd dest=$destHex ok=$ok")
+            ok
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "PyRNS sendCmd failed: ${e.message}", e)
+            false
+        }
+    }
+
     fun sendReq(destHex: String, sections: List<String>): Boolean {
         val module = pyModule ?: return false
         return try {
-            val pySections = PyObject.fromJava(sections)
-            val result = module.callAttr("send_req", destHex, pySections)
+            val result = module.callAttr("send_req", destHex, sections.joinToString(","))
             val ok = result.toString().toBoolean()
             AppLogger.i(TAG, "PyRNS sendReq dest=$destHex sections=$sections ok=$ok")
             ok

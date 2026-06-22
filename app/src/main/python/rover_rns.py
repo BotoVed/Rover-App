@@ -245,33 +245,30 @@ def send(dest_hex: str, fields: dict, await_path: bool = False, path_timeout_s: 
         return False
 
 
+def send_cmd(server_dest_hex: str, fields_json: str) -> bool:
+    import json
+    raw = json.loads(fields_json)
+    fields = {int(k): v for k, v in raw.items()}
+    return send(server_dest_hex, fields, await_path=True)
+
+
 def send_register(server_dest_hex: str, uid: str) -> bool:
     fields = {0: 9, 1: uid}
     # 90s timeout: server announces every 60s, plus TCP reconnect overhead
     return send(server_dest_hex, fields, await_path=True, path_timeout_s=90.0)
 
 
-def send_ping(server_dest_hex: str, section_hashes=None) -> bool:
+def send_ping(server_dest_hex: str, hashes_json: str = "{}") -> bool:
+    import json
+    section_hashes = json.loads(hashes_json)
     fields = {0: 6}
-    if section_hashes is not None:
-        if not isinstance(section_hashes, dict):
-            try:
-                section_hashes = {str(k): str(section_hashes.get(k)) for k in section_hashes.keySet()}
-            except Exception as e:
-                print(f"[SEND_PING] hash conversion failed: {e}")
-                section_hashes = {}
-        if section_hashes:
-            fields[1] = section_hashes
+    if section_hashes:
+        fields[1] = section_hashes
     return send(server_dest_hex, fields, await_path=True)
 
 
-def send_req(server_dest_hex: str, sections=None) -> bool:
-    if sections is None:
-        sections = ["m", "u", "a", "d"]
-    if isinstance(sections, str):
-        sections = [sections]
-    elif not isinstance(sections, list):
-        sections = [str(x) for x in sections]
+def send_req(server_dest_hex: str, sections_csv: str = "m,u,a,d") -> bool:
+    sections = [s for s in sections_csv.split(",") if s]
     fields = {0: 8, 5: sections}
     return send(server_dest_hex, fields, await_path=True)
 

@@ -56,20 +56,26 @@ class RoverService : Service() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val fieldsJson = intent?.getStringExtra("fields") ?: return
             serviceScope.launch {
-                val manager = rnsManagerReady.await()
-                val prefs = ServerPreferences(this@RoverService)
-                val dst = prefs.serverDestHash.first() ?: return@launch
-                val pk = prefs.serverPk.first() ?: return@launch
-                try {
-                    val obj = org.json.JSONObject(fieldsJson)
-                    val fields = mutableMapOf<Int, Any>()
-                    obj.keys().forEach { k ->
-                        val intKey = k.toIntOrNull() ?: return@forEach
-                        fields[intKey] = obj.get(k)
+                if (usePyTransport) {
+                    val dst = pyServerDst ?: return@launch
+                    val bridge = pyBridge ?: return@launch
+                    bridge.sendCmd(dst, fieldsJson)
+                } else {
+                    val manager = rnsManagerReady.await()
+                    val prefs = ServerPreferences(this@RoverService)
+                    val dst = prefs.serverDestHash.first() ?: return@launch
+                    val pk = prefs.serverPk.first() ?: return@launch
+                    try {
+                        val obj = org.json.JSONObject(fieldsJson)
+                        val fields = mutableMapOf<Int, Any>()
+                        obj.keys().forEach { k ->
+                            val intKey = k.toIntOrNull() ?: return@forEach
+                            fields[intKey] = obj.get(k)
+                        }
+                        manager.sendCmd(dst, pk, fields)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ACTION_CMD parse failed: ${e.message}", e)
                     }
-                    manager.sendCmd(dst, pk, fields)
-                } catch (e: Exception) {
-                    Log.e(TAG, "ACTION_CMD parse failed: ${e.message}", e)
                 }
             }
         }
@@ -252,11 +258,15 @@ class RoverService : Service() {
                 }
                 if (!isServerOnline || !repository.isConfigReceived) {
                     AppLogger.i(TAG, "Py watchdog: REQ all sections")
-                    bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                    serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                    }
                 } else {
                     val hashes = repository.getSectionHashes()
                     AppLogger.i(TAG, "Py watchdog: PING hashes=$hashes")
-                    bridge.sendPing(dst, hashes)
+                    serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                        bridge.sendPing(dst, hashes)
+                    }
                 }
             }
         }
@@ -267,8 +277,8 @@ class RoverService : Service() {
         val lbm = LocalBroadcastManager.getInstance(this)
         if (USE_LEGACY_RNS) {
             lbm.registerReceiver(registerReceiver, IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
-            lbm.registerReceiver(cmdReceiver, IntentFilter("dev.botoved.rover.ACTION_CMD"))
         }
+        lbm.registerReceiver(cmdReceiver, IntentFilter("dev.botoved.rover.ACTION_CMD"))
         lbm.registerReceiver(pyRegisterReceiver, IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
         lbm.registerReceiver(object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -489,6 +499,36 @@ class RoverService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "RNS init failed: ${e.message}", e)
                 updateNotification("Ошибка подключения")
+            }
+        }
+
+        if (!USE_LEGACY_RNS) serviceScope.launch {
+            val prefs = ServerPreferences(applicationContext)
+            val reg = prefs.isRegistered.first()
+            if (reg != "approved") return@launch
+            val dst = prefs.serverDestHash.first() ?: return@launch
+            val pk = prefs.serverPk.first() ?: return@launch
+            val tcp = prefs.serverTcp.first() ?: return@launch
+            val parts = tcp.split(":")
+            val host = parts.getOrNull(0) ?: return@launch
+            val port = parts.getOrNull(1)?.toIntOrNull() ?: 4242
+            AppLogger.i(TAG, "Py auto-reconnect: dst=${dst.take(16)} tcp=$tcp")
+            val bridge = pyBridge ?: PyRnsBridge(this@RoverService).also { pyBridge = it }
+            if (!bridge.init()) { AppLogger.e(TAG, "Py auto-reconnect: init failed"); return@launch }
+            val configDir = filesDir.absolutePath + "/rover_rns"
+            val identity = bridge.start(configDir, host, port)
+            if (identity == null) { AppLogger.e(TAG, "Py auto-reconnect: start failed"); return@launch }
+            AppLogger.i(TAG, "Py auto-reconnect: identity=$identity")
+            bridge.setServerPk(pk)
+            pyServerDst = dst
+            usePyTransport = true
+            setPyMessageHandler()
+            startPyWatchdog()
+            // send_req blocks on path-wait internally — run on IO to not stall the coroutine
+            serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                AppLogger.i(TAG, "Py auto-reconnect: sending initial REQ")
+                val ok = bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                AppLogger.i(TAG, "Py auto-reconnect: initial REQ ok=$ok")
             }
         }
 

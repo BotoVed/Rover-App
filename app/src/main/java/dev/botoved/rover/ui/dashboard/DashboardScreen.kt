@@ -252,7 +252,10 @@ private fun DashboardTopBar(
             }
         },
         actions = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(end = 12.dp)
+            ) {
                 Box(
                     modifier = Modifier
                         .size(8.dp)
@@ -267,16 +270,6 @@ private fun DashboardTopBar(
                     fontSize = 11.sp,
                     color = if (isOnline) Green else Red
                 )
-                Spacer(Modifier.width(4.dp))
-                FilledTonalButton(
-                    onClick = { viewModel.handleDebugSendReqArray() },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.tertiary
-                    ),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp, 4.dp)
-                ) {
-                    Text("REQ", fontSize = 10.sp)
-                }
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
