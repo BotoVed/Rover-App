@@ -121,6 +121,27 @@ class RoverService : Service() {
             if (tp == null) return@setMessageHandler
             AppLogger.i(TAG, "Py msg src=$sourceHex tp=$tp fields=$fields")
             when (tp) {
+                2 -> { // STATUS — bulk device states
+                    val states = fields[2] as? List<*> ?: return@setMessageHandler
+                    val arr = org.json.JSONArray()
+                    states.filterIsInstance<Map<*, *>>().forEach { s ->
+                        val obj = org.json.JSONObject()
+                        s.forEach { (k, v) -> if (v != null) obj.put(k.toString(), v) }
+                        arr.put(obj)
+                    }
+                    val intent = Intent("dev.botoved.rover.ACTION_STATUS").apply {
+                        putExtra("states", arr.toString())
+                    }
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                }
+                3 -> { // PUSH — single device state update
+                    val obj = org.json.JSONObject()
+                    fields.forEach { (k, v) -> if (v != null) obj.put(k.toString(), v) }
+                    val intent = Intent("dev.botoved.rover.ACTION_PUSH").apply {
+                        putExtra("fields", obj.toString())
+                    }
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                }
                 4 -> { // CONFIG
                     val section = fields[1] as? String
                     val hash = fields[2] as? String
