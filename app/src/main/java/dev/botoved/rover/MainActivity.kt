@@ -2,6 +2,7 @@ package dev.botoved.rover
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -45,7 +46,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val perms = mutableListOf<String>()
+        val perms = mutableListOf(Manifest.permission.CAMERA)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
@@ -53,8 +54,11 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        if (perms.isNotEmpty()) {
-            permissionLauncher.launch(perms.toTypedArray())
+        val notGranted = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (notGranted.isNotEmpty()) {
+            permissionLauncher.launch(notGranted.toTypedArray())
         }
 
         ContextCompat.startForegroundService(

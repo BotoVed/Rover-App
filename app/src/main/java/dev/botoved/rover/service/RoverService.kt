@@ -182,9 +182,9 @@ class RoverService : Service() {
                     LocalBroadcastManager.getInstance(this).sendBroadcast(pongIntent)
                     // Compare hashes → REQ for mismatches
                     val remoteHashes = fields[2] as? Map<*, *>
-                    val dst = pyServerDst
+                    val dst = pyServerDst ?: pendingRegisterDst
                     if (remoteHashes != null && dst != null) {
-                        serviceScope.launch {
+                        serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             for (section in listOf("m", "a", "d")) {
                                 val local = repository.getSectionHash(section)
                                 val remote = remoteHashes[section] as? String
@@ -199,7 +199,7 @@ class RoverService : Service() {
                             }
                         }
                     } else if (dst != null) {
-                        serviceScope.launch {
+                        serviceScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                             AppLogger.i(TAG, "PONG: no hashes, REQ all")
                             bridge.sendReq(dst, listOf("m", "u", "a", "d"))
                         }

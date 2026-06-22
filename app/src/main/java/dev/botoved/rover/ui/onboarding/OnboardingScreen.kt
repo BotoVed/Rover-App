@@ -3,8 +3,6 @@ package dev.botoved.rover.ui.onboarding
 import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Log
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -58,24 +56,23 @@ fun OnboardingScreen(
 ) {
     val state by viewModel.state.collectAsState()
     val context = LocalContext.current
-    var cameraPermissionGranted by remember { mutableStateOf(false) }
-    val cameraLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        cameraPermissionGranted = granted
-        Log.i("Rover", "Camera permission granted=$granted")
+    var cameraPermissionGranted by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA)
+                == PackageManager.PERMISSION_GRANTED
+        )
     }
-
-    LaunchedEffect(Unit) {
-        val already = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
-        if (already) {
-            cameraPermissionGranted = true
-            Log.i("Rover", "Camera permission already granted")
-        } else {
-            cameraLauncher.launch(Manifest.permission.CAMERA)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                cameraPermissionGranted = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+            }
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     LaunchedEffect(state) {
