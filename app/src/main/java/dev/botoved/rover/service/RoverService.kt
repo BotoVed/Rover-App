@@ -20,8 +20,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 
@@ -230,27 +230,7 @@ class RoverService : Service() {
                     }
                 }
 
-                // Auto-reconnect if already registered
-                val reg = prefs.isRegistered.first()
-                if (reg == "approved") {
-                    cachedServerDst = prefs.serverDestHash.first()
-                    cachedServerPk = prefs.serverPk.first()
-                    Log.i(TAG, "Auto-reconnect: dst=$cachedServerDst pk=$cachedServerPk")
-                    if (cachedServerDst != null && cachedServerPk != null) {
-                        repository.resetConfigReceived()
-                        repository.clearAll()
-                        Log.i(TAG, "Auto-reconnect: DB cleared, sending REQ for all sections")
-                        for (section in listOf("m", "a", "d")) {
-                            manager.sendReq(cachedServerDst!!, cachedServerPk!!, section)
-                            delay(200)
-                        }
-                        updateNotification("Подключено")
-                    } else {
-                        Log.w(TAG, "Auto-reconnect: dst or pk is null, cannot send REQ")
-                    }
-                } else {
-                    updateNotification("Подключение...")
-                }
+                // Start watchdog early, before auto-reconnect loop
                 serviceScope.launch {
                     while (isActive) {
                         delay(30_000)
@@ -263,24 +243,53 @@ class RoverService : Service() {
                         val pk = cachedServerPk
                         if (!isServerOnline || !repository.isConfigReceived) {
                             if (dst == null || pk == null) {
-                                Log.w(TAG, "Watchdog: dst/pk not cached, retrying...")
-                                val wPrefs = ServerPreferences(applicationContext)
-                                cachedServerDst = wPrefs.serverDestHash.first()
-                                cachedServerPk = wPrefs.serverPk.first()
+                                Log.w(TAG, "Watchdog: dst/pk not cached, skipping cycle")
                                 continue
                             }
                             if (!repository.isConfigReceived) {
                                 Log.i(TAG, "Watchdog: no config, sending REQ for all sections")
-                                for (section in listOf("m", "a", "d")) {
-                                    manager.sendReq(dst, pk, section)
-                                    delay(200)
+                                serviceScope.launch {
+                                    manager.sendReq(dst, pk, "m")
                                 }
+                                serviceScope.launch {
+                                    manager.sendReq(dst, pk, "a")
+                                }
+                                serviceScope.launch {
+                                    manager.sendReq(dst, pk, "d")
+                                }
+                            }
                         } else {
-                            Log.i(TAG, "Watchdog: sending PING")
-                            manager.sendPing(dst, pk, repository.getSectionHashes())
+                            if (dst != null && pk != null) {
+                                Log.i(TAG, "Watchdog: sending PING")
+                                manager.sendPing(dst, pk, repository.getSectionHashes())
+                            } else {
+                                Log.w(TAG, "Watchdog: dst/pk null in online branch, skipping")
+                            }
                         }
                     }
+                }
+
+                // Auto-reconnect if already registered
+                val reg = prefs.isRegistered.first()
+                if (reg == "approved") {
+                    cachedServerDst = prefs.serverDestHash.first()
+                    cachedServerPk = prefs.serverPk.first()
+                    Log.i(TAG, "Auto-reconnect: dst=$cachedServerDst pk=$cachedServerPk")
+                    val srvDst = cachedServerDst
+                    val srvPk = cachedServerPk
+                    if (srvDst != null && srvPk != null) {
+                        repository.resetConfigReceived()
+                        repository.clearAll()
+                        Log.i(TAG, "Auto-reconnect: DB cleared, sending REQ for all sections")
+                        serviceScope.launch { manager.sendReq(srvDst, srvPk, "m") }
+                        serviceScope.launch { manager.sendReq(srvDst, srvPk, "a") }
+                        serviceScope.launch { manager.sendReq(srvDst, srvPk, "d") }
+                        updateNotification("Подключено")
+                    } else {
+                        Log.w(TAG, "Auto-reconnect: dst or pk is null, cannot send REQ")
                     }
+                } else {
+                    updateNotification("Подключение...")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "RNS init failed: ${e.message}", e)

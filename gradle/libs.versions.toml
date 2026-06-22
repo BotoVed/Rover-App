@@ -2,6 +2,7 @@
 agp = "9.0.0"
 kotlin = "2.3.0"
 ksp = "2.3.9"
+chaquopy = "17.0.0"
 coreKtx = "1.13.1"
 lifecycleRuntimeKtx = "2.8.6"
 activityCompose = "1.9.2"
@@ -53,3 +54,4 @@ androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-man
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+chaquopy = { id = "com.chaquo.python", version.ref = "chaquopy" }

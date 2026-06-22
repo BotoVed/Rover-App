@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.chaquopy)
 }
 
 android {
@@ -14,6 +15,9 @@ android {
         targetSdk = 36
         versionCode = 12
         versionName = "0.2.10"
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
@@ -83,4 +87,18 @@ dependencies {
 
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+}
+
+chaquopy {
+    defaultConfig {
+        version = "3.12"
+        pyc {
+            src = false
+        }
+        pip {
+            install("rns")
+            install("lxmf")
+            install("pyserial")
+        }
+    }
 }
