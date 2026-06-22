@@ -38,6 +38,29 @@ adb shell run-as dev.botoved.rover cat /data/data/dev.botoved.rover/files/rover_
 - Devices with `areaId != null` that don't match any saved `AreaEntity` → also in "Устройства вне групп"
 - Never drop devices from display just because their areaId doesn't match a saved area
 
+## Chaquopy Java↔Python Bridge Rules
+- **Никаких коллекций через мост.** Python `dict` → Java `Map` вызывает
+  `Cannot convert dict object to java.util.Map`. Java `List`/`Map` переданные
+  через `PyObject.fromJava()` — не итерируемы в Python.
+- **Универсальное правило:** все данные через мост — только примитивные строки:
+  - Map/dict → JSON-строка: `json.dumps(fields)` / `JSONObject.toString()`
+  - List → CSV-строка: `sections.joinToString(",")` / `",".split(",")`
+- `send_cmd`, `send_req`, `send_ping` — принимают JSON/CSV строки, парсят внутри Python.
+- `onMessage(sourceHex, fieldsJson)` — принимает JSON-строку, парсится через
+  `fromJson()` в Kotlin рекурсивно (JSONObject→Map, JSONArray→List).
+- **Блокирующие Python-вызовы** (`sendReq`, `sendPing`, `sendCmd`) ВСЕГДА запускать
+  в `serviceScope.launch(Dispatchers.IO)`, иначе блокируют основной корутин-цикл.
+- `await_path` перед REGISTER/REQ/PING — намеренное решение, НЕ удалять.
+- Код: `No !!`, `No Thread.sleep`, лог-тег = "Rover".
+
+## Онбординг (Python RNS)
+- После отправки REGISTER сервер может не прислать CONFIG сразу — он присылает
+  PONG и ждёт REQ.
+- В PONG-хендлере (tp=6) используй `pyServerDst ?: pendingRegisterDst` как dst,
+  чтобы REQ работал и во время онбординга (когда `pyServerDst` ещё null).
+- Камера запрашивается в `MainActivity` вместе с BLE/location — `OnboardingScreen`
+  только проверяет статус через `LifecycleEventObserver.ON_RESUME`.
+
 ## Транспорт (Python RNS)
 - Транспортный слой — reference Python RNS через Chaquopy, НЕ Kotlin-порт.
   Старый reticulum-kt/RnsManager/ChannelController пока живут параллельно,
