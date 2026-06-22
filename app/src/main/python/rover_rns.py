@@ -11,6 +11,8 @@ import LXMF
 
 
 _incoming_callback = None
+_router = None
+_delivery_dest = None
 
 
 def set_incoming_callback(cb):
@@ -24,12 +26,6 @@ def _on_lxmf_message(message: LXMF.LXMessage) -> None:
     source_hex = message.source_hash.hex()[:16] if message.source_hash else ""
     if isinstance(message.fields, dict):
         fields = message.fields
-    elif isinstance(message.fields, bytes):
-        try:
-            import msgpack
-            fields = msgpack.unpackb(message.fields)
-        except Exception:
-            fields = {}
     else:
         fields = {}
     try:
@@ -40,6 +36,8 @@ def _on_lxmf_message(message: LXMF.LXMessage) -> None:
 
 
 def start(config_dir: str, host: str, port: int) -> str:
+    global _router, _delivery_dest
+
     os.makedirs(config_dir, exist_ok=True)
 
     identity_path = os.path.join(config_dir, "rover_identity")
@@ -84,6 +82,8 @@ loglevel = 7
 
     dest = router.register_delivery_identity(identity)
     router.register_delivery_callback(_on_lxmf_message)
+    _router = router
+    _delivery_dest = dest
 
     return identity_hash[:16]
 
@@ -101,7 +101,6 @@ def request_path_and_wait(dest_hex: str, timeout_s: float = 3.0) -> bool:
         now = time.monotonic()
         elapsed = now - started
         has_it = RNS.Transport.has_path(dest_bytes)
-        # Log every 1s or on path found
         if has_it or elapsed - last_log >= 1.0:
             last_log = elapsed
             print(f"[PATH_WAIT] t={elapsed:.1f}s elapsed={elapsed:.0f}s deadline_in={deadline-now:.0f}s has_path={has_it}")
@@ -124,11 +123,57 @@ def active_channel() -> str:
     return "none"
 
 
+def send(dest_hex: str, fields: dict, await_path: bool = False) -> bool:
+    if _router is None or _delivery_dest is None:
+        print("[SEND] router or delivery_dest not initialized")
+        return False
+
+    if await_path:
+        if not request_path_and_wait(dest_hex, timeout_s=15.0):
+            print(f"[SEND] path request failed for {dest_hex[:16]}")
+            return False
+
+    dest_bytes = bytes.fromhex(dest_hex)
+    identity = RNS.Identity.recall(dest_bytes)
+    if identity is None:
+        RNS.Transport.request_path(dest_bytes)
+        print(f"[SEND] identity not in cache for {dest_hex[:16]}, path requested")
+        return False
+
+    remote_dest = RNS.Destination(
+        identity,
+        RNS.Destination.OUT,
+        RNS.Destination.SINGLE,
+        "lxmf", "delivery",
+    )
+
+    msg = LXMF.LXMessage(
+        destination=remote_dest,
+        source=_delivery_dest,
+        content=b"",
+        title=b"",
+        desired_method=LXMF.LXMessage.DIRECT,
+    )
+    msg.fields = fields
+
+    try:
+        _router.handle_outbound(msg)
+        print(f"[SEND] dest={dest_hex[:16]} fields_keys={list(fields.keys())}")
+        return True
+    except Exception as ex:
+        print(f"[SEND] failed: {ex}")
+        return False
+
+
+def send_register(server_dest_hex: str, uid: str) -> bool:
+    fields = {0: 9, 1: uid}
+    return send(server_dest_hex, fields, await_path=True)
+
+
 def dump_diagnostics() -> str:
     lines = []
     lines.append("=== RNS Diagnostics ===")
 
-    # Path table
     lines.append(f"Path table entries: {len(RNS.Transport.path_table)}")
     for dh, entry in list(RNS.Transport.path_table.items())[:20]:
         ts, received_from, hops, expires, blobs, iface, ph = entry
@@ -136,19 +181,16 @@ def dump_diagnostics() -> str:
     if len(RNS.Transport.path_table) > 20:
         lines.append(f"  ... ({len(RNS.Transport.path_table)-20} more)")
 
-    # Destination table (local destinations)
     lines.append(f"Local destinations: {len(RNS.Transport.destinations)}")
     for d in RNS.Transport.destinations[:10]:
         lines.append(f"  dest={d}")
 
-    # Interfaces
     lines.append(f"Interfaces: {len(RNS.Transport.interfaces)}")
     for iface in RNS.Transport.interfaces:
         name = str(iface)
         online = getattr(iface, "online", "?")
         lines.append(f"  iface={name} online={online}")
 
-    # Announce table
     lines.append(f"Announce table entries: {len(RNS.Transport.announce_table)}")
 
     result = "\n".join(lines)

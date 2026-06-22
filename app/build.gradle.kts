@@ -99,6 +99,7 @@ chaquopy {
             install("rns")
             install("lxmf")
             install("pyserial")
+
         }
     }
 }

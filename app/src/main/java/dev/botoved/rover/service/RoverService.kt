@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.koin.android.ext.android.inject
 
 class RoverService : Service() {
@@ -73,10 +74,95 @@ class RoverService : Service() {
         }
     }
 
+    private var pyBridge: PyRnsBridge? = null
+
+    private val pyRegisterReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val dst = intent?.getStringExtra("dst") ?: return
+            val uid = intent.getStringExtra("uid") ?: ""
+            val tcp = intent.getStringExtra("tcp")
+            Log.i(TAG, "Py onboarding: dst=$dst uid=$uid tcp=$tcp")
+            if (tcp == null) {
+                Log.w(TAG, "Py onboarding: no tcp in QR, cannot start TCP interface")
+                return
+            }
+            val parts = tcp.split(":")
+            if (parts.size != 2) {
+                Log.w(TAG, "Py onboarding: invalid tcp=$tcp")
+                return
+            }
+            val host = parts[0]
+            val port = parts[1].toIntOrNull() ?: 4242
+            serviceScope.launch {
+                handlePyRegister(dst, uid, host, port)
+            }
+        }
+    }
+
+    private suspend fun handlePyRegister(dst: String, uid: String, host: String, port: Int) {
+        val bridge = pyBridge ?: PyRnsBridge(this).also { pyBridge = it }
+        if (!bridge.init()) {
+            Log.e(TAG, "Py onboarding: Python init failed")
+            return
+        }
+        val configDir = filesDir.absolutePath + "/rover_rns"
+        if (pyBridge == null) {
+            val identity = bridge.start(configDir, host, port)
+            if (identity == null) {
+                Log.e(TAG, "Py onboarding: start failed")
+                return
+            }
+            Log.i(TAG, "Py onboarding client identity=$identity")
+        }
+
+        val response = CompletableDeferred<Pair<Int, Map<*, *>>?>()
+
+        bridge.setMessageHandler { sourceHex, fields ->
+            val tp = (fields[0] as? Number)?.toInt()
+            Log.i(TAG, "Py onboarding msg tp=$tp")
+            if (tp == 4 || tp == 7) {
+                response.complete(tp to fields)
+            }
+        }
+
+        val sent = bridge.sendRegister(dst, uid)
+        if (!sent) {
+            Log.e(TAG, "Py onboarding: sendRegister failed")
+            return
+        }
+        Log.i(TAG, "Py onboarding: REGISTER sent, waiting for CONFIG...")
+
+        val result = withTimeoutOrNull(30_000L) { response.await() }
+
+        if (result == null) {
+            Log.w(TAG, "Py onboarding: TIMEOUT waiting for server response")
+            val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+            return
+        }
+
+        val (tp, fields) = result
+        Log.i(TAG, "Py onboarding: received tp=$tp fields=$fields")
+
+        if (tp == 4) {
+            val prefs = ServerPreferences(this)
+            prefs.setApproved()
+            Log.i(TAG, "Py onboarding: approved via CONFIG")
+            val intent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        } else if (tp == 7) {
+            Log.w(TAG, "Py onboarding: FORBIDDEN received")
+            val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
+            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         LocalBroadcastManager.getInstance(this).apply {
             registerReceiver(registerReceiver,
+                IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
+            registerReceiver(pyRegisterReceiver,
                 IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
             registerReceiver(cmdReceiver,
                 IntentFilter("dev.botoved.rover.ACTION_CMD"))

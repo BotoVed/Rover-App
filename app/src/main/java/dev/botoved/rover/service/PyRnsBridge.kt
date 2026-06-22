@@ -14,9 +14,17 @@ class PyRnsBridge(private val context: Context) {
     private val incomingCallback = MessageCallback()
 
     inner class MessageCallback {
+        private var handler: ((String, Map<*, *>) -> Unit)? = null
+
+        fun setHandler(h: (String, Map<*, *>) -> Unit) {
+            handler = h
+        }
+
         @Suppress("unused")
         fun onMessage(sourceHex: String, fields: Map<*, *>) {
-            Log.i(TAG, "PyRNS msg from=$sourceHex fields=$fields")
+            val tp = (fields[0] as? Number)?.toInt()
+            Log.i(TAG, "PyRNS msg src=$sourceHex tp=$tp fields=$fields")
+            handler?.invoke(sourceHex, fields)
         }
     }
 
@@ -76,6 +84,37 @@ class PyRnsBridge(private val context: Context) {
         }
     }
 
+    fun sendRegister(destHex: String, uid: String): Boolean {
+        val module = pyModule ?: return false
+        return try {
+            val result = module.callAttr("send_register", destHex, uid)
+            val ok = result.toString().toBoolean()
+            Log.i(TAG, "PyRNS sendRegister dest=$destHex uid=$uid ok=$ok")
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "PyRNS sendRegister failed: ${e.message}", e)
+            false
+        }
+    }
+
+    fun send(destHex: String, fields: Map<*, *>, awaitPath: Boolean = false): Boolean {
+        val module = pyModule ?: return false
+        return try {
+            val pyFields = PyObject.fromJava(fields)
+            val result = module.callAttr("send", destHex, pyFields, awaitPath)
+            val ok = result.toString().toBoolean()
+            Log.i(TAG, "PyRNS send dest=$destHex ok=$ok")
+            ok
+        } catch (e: Exception) {
+            Log.e(TAG, "PyRNS send failed: ${e.message}", e)
+            false
+        }
+    }
+
+    fun setMessageHandler(handler: (String, Map<*, *>) -> Unit) {
+        incomingCallback.setHandler(handler)
+    }
+
     fun dumpDiagnostics(): String {
         val module = pyModule ?: return "no module"
         return try {
@@ -93,7 +132,11 @@ class PyRnsBridge(private val context: Context) {
         // SPIKE TEST ONLY — реальный адрес берётся из QR на этапе онбординга
         private const val HAOS_HOST = "192.168.1.114"
         private const val HAOS_PORT = 4242
-        private const val SERVER_IDENTITY_HEX = "9c6d5641e8c1ba46376bcbcb8e39c4cc"
+        // Актуальный identity сервера из log: "Rover server identity hash: f6be97eaf5bc4ef313e28f036ddb5503"
+        private const val SERVER_IDENTITY_HEX = "f6be97eaf5bc4ef313e28f036ddb5503"
+        // QR uid — устанавливается перед тестом (генерируется через options_flow config step на сервере)
+        @JvmStatic var QR_UID = "4012"
+        @JvmStatic var spikeResult: String? = null
 
         fun runSpike(context: Context) {
             val bridge = PyRnsBridge(context)
@@ -112,8 +155,45 @@ class PyRnsBridge(private val context: Context) {
             val channel = bridge.activeChannel()
             Log.i(TAG, "SPIKE activeChannel=$channel")
 
+            // Set up message handler before sending register
+            val configReceived = java.util.concurrent.CompletableFuture<Boolean>()
+            bridge.setMessageHandler { srcHex, fields ->
+                val tp = (fields[0] as? Number)?.toInt()
+                Log.i(TAG, "SPIKE msg src=$srcHex tp=$tp fields=$fields")
+                if (tp == 4 || tp == 7) { // CONFIG=4, FORBIDDEN=7
+                    configReceived.complete(tp == 4)
+                }
+            }
+
             val pathOk = bridge.requestPathAndWait(SERVER_IDENTITY_HEX, 120.0)
             Log.i(TAG, "SPIKE requestPathAndWait=$pathOk")
+            if (!pathOk) {
+                Log.e(TAG, "SPIKE ABORT: path not found")
+                return
+            }
+
+            // Send REGISTER with QR uid
+            val regOk = bridge.sendRegister(SERVER_IDENTITY_HEX, QR_UID)
+            Log.i(TAG, "SPIKE sendRegister=$regOk")
+            if (!regOk) {
+                Log.e(TAG, "SPIKE ABORT: sendRegister failed")
+                return
+            }
+
+            // Wait for CONFIG (30s timeout)
+            try {
+                val approved = configReceived.get(30000L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (approved) {
+                    Log.i(TAG, "SPIKE ONBOARDING PASSED: CONFIG received")
+                    spikeResult = "PASS"
+                } else {
+                    Log.w(TAG, "SPIKE ONBOARDING FAILED: FORBIDDEN received")
+                    spikeResult = "FAIL_FORBIDDEN"
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "SPIKE ONBOARDING TIMEOUT: no CONFIG/FORBIDDEN in 30s", e)
+                spikeResult = "FAIL_TIMEOUT"
+            }
 
             val diag = bridge.dumpDiagnostics()
             for (line in diag.split("\n")) {
