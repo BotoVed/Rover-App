@@ -14,10 +14,8 @@ class RoverApp : Application() {
             androidContext(this@RoverApp)
             modules(appModule)
         }
-        Thread {
-            Log.i(TAG, "SPIKE Python RNS starting...")
-            PyRnsBridge.runSpike(this@RoverApp)
-        }.start()
+        AppLogger.init(filesDir)
+        // SPIKE: disabled after stage 2 (onboarding via QR works, spike role complete)
     }
 
     companion object {

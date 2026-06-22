@@ -219,6 +219,12 @@ class DashboardViewModel(
         }
     }
 
+    fun handleDebugSendReqArray() {
+        val intent = Intent("dev.botoved.rover.ACTION_DEBUG_SEND_REQ_ARRAY")
+        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
+        Log.i("Rover", "DEBUG: send req array broadcast sent")
+    }
+
     private fun parseIsOn(fields: Map<*, *>): Boolean? {
         // PUSH: integer key 1 = v
         // STATUS: string key "v"

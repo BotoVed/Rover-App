@@ -84,10 +84,10 @@ class OnboardingViewModel(
 
                 approvalTimeoutJob?.cancel()
                 approvalTimeoutJob = viewModelScope.launch {
-                    delay(30_000)
+                    delay(150_000)
                     if (_state.value is OnboardingState.WaitingApproval) {
                         _state.value = OnboardingState.Error(
-                            "Сервер не ответил за 30 секунд. Проверь подключение и попробуй снова."
+                            "Сервер не ответил за 150 секунд. Проверь подключение и попробуй снова."
                         )
                     }
                 }

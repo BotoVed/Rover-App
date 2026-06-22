@@ -193,7 +193,7 @@ fun DashboardScreen(
                     .padding(padding)
             ) {
                 when {
-                    uiState.isLoading -> SkeletonContent()
+                    selectedTab == 0 && uiState.isLoading -> SkeletonContent()
                     selectedTab == 0 -> {
                         LazyColumn(
                             modifier = Modifier.fillMaxSize(),
@@ -214,7 +214,7 @@ fun DashboardScreen(
                         }
                     }
                     else -> {
-                        SettingsTab(onReconnect = { viewModel.reconnect() })
+                        SettingsTab(onReconnect = { viewModel.reconnect() }, onDebugSendReq = { viewModel.handleDebugSendReqArray() })
                     }
                 }
             }
@@ -228,7 +228,8 @@ private fun DashboardTopBar(
     serverName: String,
     isOnline: Boolean,
     channel: String?,
-    destHash: String?
+    destHash: String?,
+    viewModel: DashboardViewModel = koinViewModel()
 ) {
     TopAppBar(
         title = {
@@ -267,6 +268,15 @@ private fun DashboardTopBar(
                     color = if (isOnline) Green else Red
                 )
                 Spacer(Modifier.width(4.dp))
+                FilledTonalButton(
+                    onClick = { viewModel.handleDebugSendReqArray() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.tertiary
+                    ),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp, 4.dp)
+                ) {
+                    Text("REQ", fontSize = 10.sp)
+                }
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
@@ -1022,7 +1032,7 @@ private fun deviceTypeLabel(type: String): String = when (type) {
 }
 
 @Composable
-private fun SettingsTab(onReconnect: () -> Unit) {
+private fun SettingsTab(onReconnect: () -> Unit, onDebugSendReq: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -1039,6 +1049,14 @@ private fun SettingsTab(onReconnect: () -> Unit) {
             )
         ) {
             Text("Переподключиться")
+        }
+        Button(
+            onClick = onDebugSendReq,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.tertiary
+            )
+        ) {
+            Text("Send REQ (m,a,d)")
         }
     }
 }

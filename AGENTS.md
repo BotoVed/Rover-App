@@ -9,6 +9,30 @@
 - `./gradlew assembleDebug` then `adb install -r .../app-debug.apk`
 - ADB logs: `adb logcat -d -s Rover`
 
+## Debug Logging
+Единый файл-лог для Python и Kotlin: `filesDir/rover_rns/debug.log`
+(`/data/data/dev.botoved.rover/files/rover_rns/debug.log` на устройстве).
+
+**Читать:**
+```bash
+adb shell run-as dev.botoved.rover cat /data/data/dev.botoved.rover/files/rover_rns/debug.log
+```
+или забрать на машину:
+```bash
+adb shell run-as dev.botoved.rover cat /data/data/dev.botoved.rover/files/rover_rns/debug.log > /tmp/rover_debug.log
+```
+
+**Как работает:**
+- `AppLogger` (Kotlin) — пишет в файл И в logcat (`Log.*`). Инициализируется в `RoverApp.onCreate()`.
+  Формат: `[HH:mm:ss.SSS] [LEVEL/Kt/TAG] message`
+- `_init_file_log()` (Python, rover_rns.py) — устанавливает `sys.stdout` как TeeFile:
+  все `print()` и внутренние логи RNS идут одновременно в logcat (`python.stdout`) и в файл.
+  Вызывается в начале `start()`.
+- Файл открывается в режиме append; каждая сессия начинается с маркера `=== session ===`.
+
+**Правило:** новые точки логирования в RoverService/PyRnsBridge → `AppLogger.*`,
+новые `print()` в rover_rns.py автоматически попадают в файл.
+
 ## Dashboard — Device Display Rules
 - Devices with `areaId = null` → zone "Устройства вне групп"
 - Devices with `areaId != null` that don't match any saved `AreaEntity` → also in "Устройства вне групп"

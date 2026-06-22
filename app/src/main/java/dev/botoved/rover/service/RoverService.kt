@@ -24,6 +24,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import dev.botoved.rover.AppLogger
 import org.koin.android.ext.android.inject
 
 class RoverService : Service() {
@@ -38,6 +39,18 @@ class RoverService : Service() {
     private var lastPongTime = 0L
     private var cachedServerDst: String? = null
     private var cachedServerPk: String? = null
+
+    // Python transport state
+    @Volatile
+    private var usePyTransport = false
+    private var pyBridge: PyRnsBridge? = null
+    private var pyServerDst: String? = null
+    @Volatile
+    private var pyOnboardingDone = false
+    private var pyOnboardingResponse: java.util.concurrent.CompletableFuture<Boolean>? = null
+    private var pyWatchdogStarted = false
+    // Saved during onboarding; completed by CONFIG handler whenever it arrives
+    private var pendingRegisterDst: String? = null
 
     private val cmdReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -74,106 +87,201 @@ class RoverService : Service() {
         }
     }
 
-    private var pyBridge: PyRnsBridge? = null
-
     private val pyRegisterReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val dst = intent?.getStringExtra("dst") ?: return
             val uid = intent.getStringExtra("uid") ?: ""
+            val pk = intent.getStringExtra("pk") ?: ""
             val tcp = intent.getStringExtra("tcp")
-            Log.i(TAG, "Py onboarding: dst=$dst uid=$uid tcp=$tcp")
+            AppLogger.i(TAG, "Py onboarding: dst=$dst pk=$pk uid=$uid tcp=$tcp")
             if (tcp == null) {
-                Log.w(TAG, "Py onboarding: no tcp in QR, cannot start TCP interface")
+                AppLogger.w(TAG, "Py onboarding: no tcp in QR")
                 return
             }
             val parts = tcp.split(":")
-            if (parts.size != 2) {
-                Log.w(TAG, "Py onboarding: invalid tcp=$tcp")
-                return
-            }
+            if (parts.size != 2) return
             val host = parts[0]
             val port = parts[1].toIntOrNull() ?: 4242
             serviceScope.launch {
-                handlePyRegister(dst, uid, host, port)
+                handlePyRegister(dst, pk, uid, host, port)
             }
         }
     }
 
-    private suspend fun handlePyRegister(dst: String, uid: String, host: String, port: Int) {
+    private fun setPyMessageHandler() {
+        val bridge = pyBridge ?: return
+        bridge.setMessageHandler { sourceHex, fields ->
+            val tp = (fields[0] as? Number)?.toInt()
+            if (tp == null) return@setMessageHandler
+            AppLogger.i(TAG, "Py msg src=$sourceHex tp=$tp fields=$fields")
+            when (tp) {
+                4 -> { // CONFIG
+                    val section = fields[1] as? String
+                    val hash = fields[2] as? String
+                    if (section != null && hash != null) {
+                        serviceScope.launch {
+                            repository.saveSectionHash(section, hash)
+                            when (section) {
+                                "m" -> repository.saveMeta(fields)
+                                "a" -> repository.saveAreas(fields)
+                                "d" -> repository.saveDevices(fields)
+                            }
+                            repository.markConfigReceived()
+                        }
+                    }
+                    // Complete service-side onboarding on first CONFIG, whenever it arrives
+                    val pendingDst = pendingRegisterDst
+                    if (pendingDst != null && !usePyTransport) {
+                        pendingRegisterDst = null
+                        pyServerDst = pendingDst
+                        usePyTransport = true
+                        AppLogger.i(TAG, "Py onboarding: CONFIG received, approved dst=$pendingDst")
+                        startPyWatchdog()
+                    }
+                    val intent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    val resp = pyOnboardingResponse
+                    if (resp != null && !pyOnboardingDone) {
+                        resp.complete(true)
+                    }
+                }
+                6 -> { // PONG
+                    lastPongTime = System.currentTimeMillis()
+                    isServerOnline = true
+                    val channel = pyBridge?.activeChannel() ?: "TCP"
+                    val pongIntent = Intent("dev.botoved.rover.ACTION_PONG").apply {
+                        putExtra("channel", channel)
+                    }
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(pongIntent)
+                    // Compare hashes → REQ for mismatches
+                    val remoteHashes = fields[2] as? Map<*, *>
+                    val dst = pyServerDst
+                    if (remoteHashes != null && dst != null) {
+                        serviceScope.launch {
+                            for (section in listOf("m", "a", "d")) {
+                                val local = repository.getSectionHash(section)
+                                val remote = remoteHashes[section] as? String
+                                if (remote != null && local != remote) {
+                                    AppLogger.i(TAG, "Hash mismatch $section local=$local remote=$remote -> REQ")
+                                    bridge.sendReq(dst, listOf(section))
+                                }
+                            }
+                            if (remoteHashes.isEmpty() || repository.getSectionHashes().isEmpty()) {
+                                AppLogger.i(TAG, "PONG: hashes empty, REQ all")
+                                bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                            }
+                        }
+                    } else if (dst != null) {
+                        serviceScope.launch {
+                            AppLogger.i(TAG, "PONG: no hashes, REQ all")
+                            bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                        }
+                    }
+                }
+                7 -> { // FORBIDDEN
+                    AppLogger.w(TAG, "Py FORBIDDEN — resetting")
+                    serviceScope.launch {
+                        val prefs = ServerPreferences(this@RoverService)
+                        prefs.clear()
+                        repository.clearAll()
+                        repository.resetConfigReceived()
+                    }
+                    val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
+                    LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+                    val resp = pyOnboardingResponse
+                    if (resp != null && !pyOnboardingDone) {
+                        resp.complete(false)
+                    }
+                }
+                else -> AppLogger.i(TAG, "Py msg tp=$tp unhandled")
+            }
+        }
+    }
+
+    private suspend fun handlePyRegister(dst: String, pk: String, uid: String, host: String, port: Int) {
         val bridge = pyBridge ?: PyRnsBridge(this).also { pyBridge = it }
         if (!bridge.init()) {
-            Log.e(TAG, "Py onboarding: Python init failed")
+            AppLogger.e(TAG, "Py onboarding: Python init failed")
             return
         }
         val configDir = filesDir.absolutePath + "/rover_rns"
-        if (pyBridge == null) {
-            val identity = bridge.start(configDir, host, port)
-            if (identity == null) {
-                Log.e(TAG, "Py onboarding: start failed")
-                return
-            }
-            Log.i(TAG, "Py onboarding client identity=$identity")
+        val identity = bridge.start(configDir, host, port)
+        if (identity == null) {
+            AppLogger.e(TAG, "Py onboarding: start failed")
+            return
+        }
+        AppLogger.i(TAG, "Py onboarding client identity=$identity")
+
+        // Pre-compute server LXMF delivery destination from QR public key.
+        // Path table is keyed by delivery hash, not identity hash — must set before sendRegister.
+        if (pk.isNotEmpty()) {
+            val pkSet = bridge.setServerPk(pk)
+            AppLogger.i(TAG, "Py onboarding: setServerPk=$pkSet")
         }
 
-        val response = CompletableDeferred<Pair<Int, Map<*, *>>?>()
-
-        bridge.setMessageHandler { sourceHex, fields ->
-            val tp = (fields[0] as? Number)?.toInt()
-            Log.i(TAG, "Py onboarding msg tp=$tp")
-            if (tp == 4 || tp == 7) {
-                response.complete(tp to fields)
-            }
-        }
+        pendingRegisterDst = dst
+        setPyMessageHandler()
 
         val sent = bridge.sendRegister(dst, uid)
         if (!sent) {
-            Log.e(TAG, "Py onboarding: sendRegister failed")
+            AppLogger.e(TAG, "Py onboarding: sendRegister failed")
+            pendingRegisterDst = null
             return
         }
-        Log.i(TAG, "Py onboarding: REGISTER sent, waiting for CONFIG...")
+        AppLogger.i(TAG, "Py onboarding: REGISTER sent, CONFIG will arrive asynchronously")
+        // Service state (pyServerDst, usePyTransport, watchdog) is completed in
+        // setPyMessageHandler() tp==4 handler when CONFIG is delivered by the server.
+    }
 
-        val result = withTimeoutOrNull(30_000L) { response.await() }
-
-        if (result == null) {
-            Log.w(TAG, "Py onboarding: TIMEOUT waiting for server response")
-            val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-            return
-        }
-
-        val (tp, fields) = result
-        Log.i(TAG, "Py onboarding: received tp=$tp fields=$fields")
-
-        if (tp == 4) {
-            val prefs = ServerPreferences(this)
-            prefs.setApproved()
-            Log.i(TAG, "Py onboarding: approved via CONFIG")
-            val intent = Intent("dev.botoved.rover.ACTION_CONFIG_RECEIVED")
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
-        } else if (tp == 7) {
-            Log.w(TAG, "Py onboarding: FORBIDDEN received")
-            val intent = Intent("dev.botoved.rover.ACTION_FORBIDDEN")
-            LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    private fun startPyWatchdog() {
+        val bridge = pyBridge ?: return
+        if (pyWatchdogStarted) return
+        pyWatchdogStarted = true
+        serviceScope.launch {
+            while (isActive) {
+                delay(30_000)
+                val elapsed = System.currentTimeMillis() - lastPongTime
+                if (elapsed > 30_000 && isServerOnline) {
+                    isServerOnline = false
+                    AppLogger.w(TAG, "Py watchdog: no PONG ${elapsed}ms, offline")
+                }
+                val dst = pyServerDst
+                if (dst == null) {
+                    AppLogger.w(TAG, "Py watchdog: no dst, skip")
+                    continue
+                }
+                if (!isServerOnline || !repository.isConfigReceived) {
+                    AppLogger.i(TAG, "Py watchdog: REQ all sections")
+                    bridge.sendReq(dst, listOf("m", "u", "a", "d"))
+                } else {
+                    val hashes = repository.getSectionHashes()
+                    AppLogger.i(TAG, "Py watchdog: PING hashes=$hashes")
+                    bridge.sendPing(dst, hashes)
+                }
+            }
         }
     }
 
     override fun onCreate() {
         super.onCreate()
-        LocalBroadcastManager.getInstance(this).apply {
-            registerReceiver(registerReceiver,
-                IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
-            registerReceiver(pyRegisterReceiver,
-                IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
-            registerReceiver(cmdReceiver,
-                IntentFilter("dev.botoved.rover.ACTION_CMD"))
+        val lbm = LocalBroadcastManager.getInstance(this)
+        if (USE_LEGACY_RNS) {
+            lbm.registerReceiver(registerReceiver, IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
+            lbm.registerReceiver(cmdReceiver, IntentFilter("dev.botoved.rover.ACTION_CMD"))
         }
+        lbm.registerReceiver(pyRegisterReceiver, IntentFilter("dev.botoved.rover.ACTION_REGISTER"))
+        lbm.registerReceiver(object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                handleDebugSendReqArray()
+            }
+        }, IntentFilter("dev.botoved.rover.ACTION_DEBUG_SEND_REQ_ARRAY"))
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.i(TAG, "RoverService starting")
+        AppLogger.i(TAG, "RoverService starting")
         startForeground(NOTIFICATION_ID, buildNotification("Инициализация..."))
 
-        serviceScope.launch {
+        if (USE_LEGACY_RNS) serviceScope.launch {
             try {
                 val identity = RoverIdentity.getOrCreate(applicationContext)
                 Log.i(TAG, "Identity ready: ${identity.hexHash}")
@@ -320,6 +428,7 @@ class RoverService : Service() {
                 serviceScope.launch {
                     while (isActive) {
                         delay(30_000)
+                        if (usePyTransport) continue
                         val elapsed = System.currentTimeMillis() - lastPongTime
                         if (elapsed > 30_000 && isServerOnline) {
                             isServerOnline = false
@@ -386,15 +495,27 @@ class RoverService : Service() {
         return START_STICKY
     }
 
+    // Debug: send REQ with array of sections (m, a, d)
+    private fun handleDebugSendReqArray() {
+        AppLogger.i(TAG, "DEBUG: handling debugSendReqArray")
+        if (PyRnsBridge.isBridgeAvailable()) {
+            PyRnsBridge.debugSendReqArray()
+        } else {
+            AppLogger.e(TAG, "DEBUG: Python bridge not available")
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
-        Log.i(TAG, "RoverService stopping")
-        LocalBroadcastManager.getInstance(this).apply {
-            unregisterReceiver(registerReceiver)
-            unregisterReceiver(cmdReceiver)
+        AppLogger.i(TAG, "RoverService stopping")
+        if (USE_LEGACY_RNS) {
+            LocalBroadcastManager.getInstance(this).apply {
+                unregisterReceiver(registerReceiver)
+                unregisterReceiver(cmdReceiver)
+            }
+            rnsManager?.stop()
         }
-        rnsManager?.stop()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -420,5 +541,7 @@ class RoverService : Service() {
     companion object {
         private const val TAG = "Rover"
         const val NOTIFICATION_ID = 1
+        // TODO: set true and remove this flag after Kotlin RNS stack is fully deleted
+        const val USE_LEGACY_RNS = false
     }
 }
