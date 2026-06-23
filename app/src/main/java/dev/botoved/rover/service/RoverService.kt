@@ -44,6 +44,7 @@ class RoverService : Service() {
     @Volatile
     private var usePyTransport = false
     private var pyBridge: PyRnsBridge? = null
+    private var btRnodeBridge: BtRnodeBridge? = null
     private var pyServerDst: String? = null
     @Volatile
     private var pyOnboardingDone = false
@@ -232,7 +233,9 @@ class RoverService : Service() {
             return
         }
         val configDir = filesDir.absolutePath + "/rover_rns"
-        val identity = bridge.start(configDir, host, port)
+        val prefs = ServerPreferences(this)
+        val rnodeJson = buildRNodeJsonWithBt(prefs, bridge)
+        val identity = bridge.start(configDir, host, port, rnodeJson)
         if (identity == null) {
             AppLogger.e(TAG, "Py onboarding: start failed")
             return
@@ -258,6 +261,42 @@ class RoverService : Service() {
         AppLogger.i(TAG, "Py onboarding: REGISTER sent, CONFIG will arrive asynchronously")
         // Service state (pyServerDst, usePyTransport, watchdog) is completed in
         // setPyMessageHandler() tp==4 handler when CONFIG is delivered by the server.
+    }
+
+    @android.annotation.SuppressLint("MissingPermission")
+    private suspend fun buildRNodeJsonWithBt(prefs: ServerPreferences, bridge: PyRnsBridge): String {
+        val enabled = prefs.rnodeEnabled.first()
+        val mac = prefs.rnodePort.first()
+        val freq = prefs.rnodeFreq.first()
+        val bw = prefs.rnodeBw.first()
+        val sf = prefs.rnodeSf.first()
+        val cr = prefs.rnodeCr.first()
+        val txpower = prefs.rnodeTxpower.first()
+
+        var btPort: Int? = null
+        if (enabled && mac.isNotEmpty()) {
+            val btb = BtRnodeBridge(this, serviceScope)
+            if (btb.start(mac)) {
+                btRnodeBridge?.stop()
+                btRnodeBridge = btb
+                btPort = btb.localPort
+                AppLogger.i(TAG, "BtRnode bridge started on port $btPort")
+            } else {
+                AppLogger.w(TAG, "BtRnode bridge failed — RNode will be unavailable")
+            }
+        }
+
+        val obj = org.json.JSONObject().apply {
+            put("enabled", enabled)
+            put("port", mac)
+            put("frequency", freq)
+            put("bandwidth", bw)
+            put("spreadingfactor", sf)
+            put("codingrate", cr)
+            put("txpower", txpower)
+            if (btPort != null) put("bt_port", btPort)
+        }
+        return obj.toString()
     }
 
     private fun startPyWatchdog() {
@@ -537,7 +576,8 @@ class RoverService : Service() {
             val bridge = pyBridge ?: PyRnsBridge(this@RoverService).also { pyBridge = it }
             if (!bridge.init()) { AppLogger.e(TAG, "Py auto-reconnect: init failed"); return@launch }
             val configDir = filesDir.absolutePath + "/rover_rns"
-            val identity = bridge.start(configDir, host, port)
+            val rnodeJson = buildRNodeJsonWithBt(prefs, bridge)
+            val identity = bridge.start(configDir, host, port, rnodeJson)
             if (identity == null) { AppLogger.e(TAG, "Py auto-reconnect: start failed"); return@launch }
             AppLogger.i(TAG, "Py auto-reconnect: identity=$identity")
             bridge.setServerPk(pk)
@@ -577,6 +617,7 @@ class RoverService : Service() {
             }
             rnsManager?.stop()
         }
+        btRnodeBridge?.stop()
         serviceScope.cancel()
         super.onDestroy()
     }

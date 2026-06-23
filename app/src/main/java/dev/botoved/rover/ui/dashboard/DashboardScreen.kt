@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -77,12 +78,16 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -214,7 +219,7 @@ fun DashboardScreen(
                         }
                     }
                     else -> {
-                        SettingsTab(onReconnect = { viewModel.reconnect() }, onDebugSendReq = { viewModel.handleDebugSendReqArray() })
+                        SettingsTab(onReconnect = { viewModel.reconnect() })
                     }
                 }
             }
@@ -1024,32 +1029,260 @@ private fun deviceTypeLabel(type: String): String = when (type) {
     else -> "Устройство"
 }
 
+@android.annotation.SuppressLint("MissingPermission")
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun SettingsTab(onReconnect: () -> Unit, onDebugSendReq: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
+private fun SettingsTab(
+    onReconnect: () -> Unit,
+    prefs: ServerPreferences = org.koin.compose.koinInject()
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val loraRegions = remember {
+        listOf(
+            "EU868 (869.5 МГц)" to 869_500_000L,
+            "RU864 (864.0 МГц)" to 864_000_000L,
+            "EU433 (433.2 МГц)" to 433_175_000L,
+            "US915 (915.0 МГц)" to 915_000_000L,
+            "AU915 (915.0 МГц)" to 915_000_000L,
+            "AS923 (923.0 МГц)" to 923_000_000L,
+            "IN865 (865.0 МГц)" to 865_000_000L,
+            "KR920 (920.0 МГц)" to 920_000_000L,
+            "CN470 (470.0 МГц)" to 470_000_000L,
+        )
+    }
+
+    val bondedDevices = remember {
+        try {
+            val bm = context.getSystemService(android.bluetooth.BluetoothManager::class.java)
+            bm?.adapter?.bondedDevices?.toList() ?: emptyList()
+        } catch (_: Exception) { emptyList() }
+    }
+
+    val rnodeEnabled by prefs.rnodeEnabled.collectAsState(initial = false)
+    val rnodePort by prefs.rnodePort.collectAsState(initial = "")
+    val rnodeFreq by prefs.rnodeFreq.collectAsState(initial = 869_500_000L)
+    val rnodeBw by prefs.rnodeBw.collectAsState(initial = 125_000L)
+    val rnodeSf by prefs.rnodeSf.collectAsState(initial = 7)
+    val rnodeCr by prefs.rnodeCr.collectAsState(initial = 5)
+    val rnodeTxpower by prefs.rnodeTxpower.collectAsState(initial = 14)
+
+    var localEnabled by remember(rnodeEnabled) { mutableStateOf(rnodeEnabled) }
+    var localMac by remember(rnodePort) { mutableStateOf(rnodePort) }
+    var localFreq by remember(rnodeFreq) { mutableStateOf(rnodeFreq) }
+    var localBw by remember(rnodeBw) { mutableStateOf(rnodeBw) }
+    var localSf by remember(rnodeSf) { mutableStateOf(rnodeSf) }
+    var localCr by remember(rnodeCr) { mutableStateOf(rnodeCr) }
+    var localTxpower by remember(rnodeTxpower) { mutableStateOf(rnodeTxpower.toFloat()) }
+
+    var btMenuExpanded by remember { mutableStateOf(false) }
+    var regionMenuExpanded by remember { mutableStateOf(false) }
+    var bwMenuExpanded by remember { mutableStateOf(false) }
+    var sfMenuExpanded by remember { mutableStateOf(false) }
+    var crMenuExpanded by remember { mutableStateOf(false) }
+
+    val selectedRegionLabel = loraRegions.find { it.second == localFreq }?.first
+        ?: "${String.format("%.1f", localFreq / 1_000_000.0)} МГц"
+    val selectedBtLabel = bondedDevices.find { it.address == localMac }
+        ?.let { "${it.name} (${it.address})" } ?: localMac.ifEmpty { "Не выбрано" }
+
+    fun save() {
+        scope.launch {
+            prefs.saveRNodeConfig(localEnabled, localMac, localFreq, localBw, localSf, localCr, localTxpower.toInt())
+        }
+    }
+
+    @Composable
+    fun SettingRow(label: String, content: @Composable () -> Unit) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            content()
+        }
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            "Настройки",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 16.sp
-        )
-        Button(
-            onClick = onReconnect,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.error
-            )
-        ) {
-            Text("Переподключиться")
+        item {
+            Button(
+                onClick = onReconnect,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Переподключиться")
+            }
         }
-        Button(
-            onClick = onDebugSendReq,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.tertiary
-            )
-        ) {
-            Text("Send REQ (m,a,d)")
+
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("RNode / LoRa", style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    SettingRow("Включить") {
+                        androidx.compose.material3.Switch(
+                            checked = localEnabled,
+                            onCheckedChange = { localEnabled = it }
+                        )
+                    }
+
+                    if (localEnabled) {
+                        // Bluetooth device picker
+                        SettingRow("Bluetooth устройство") {
+                            Box {
+                                FilledTonalButton(
+                                    onClick = { btMenuExpanded = true },
+                                    modifier = Modifier.widthIn(max = 200.dp)
+                                ) {
+                                    Text(
+                                        selectedBtLabel,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = btMenuExpanded,
+                                    onDismissRequest = { btMenuExpanded = false }
+                                ) {
+                                    if (bondedDevices.isEmpty()) {
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text("Нет спаренных устройств") },
+                                            onClick = { btMenuExpanded = false }
+                                        )
+                                    } else {
+                                        bondedDevices.forEach { dev ->
+                                            androidx.compose.material3.DropdownMenuItem(
+                                                text = { Text("${dev.name}\n${dev.address}") },
+                                                onClick = { localMac = dev.address; btMenuExpanded = false }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Region / frequency
+                        SettingRow("Регион") {
+                            Box {
+                                FilledTonalButton(
+                                    onClick = { regionMenuExpanded = true },
+                                    modifier = Modifier.widthIn(max = 200.dp)
+                                ) {
+                                    Text(
+                                        selectedRegionLabel,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                }
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = regionMenuExpanded,
+                                    onDismissRequest = { regionMenuExpanded = false }
+                                ) {
+                                    loraRegions.forEach { (label, freq) ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text(label) },
+                                            onClick = { localFreq = freq; regionMenuExpanded = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Bandwidth
+                        SettingRow("Полоса") {
+                            Box {
+                                FilledTonalButton(onClick = { bwMenuExpanded = true }) {
+                                    Text("${localBw / 1000} кГц")
+                                }
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = bwMenuExpanded,
+                                    onDismissRequest = { bwMenuExpanded = false }
+                                ) {
+                                    listOf(125_000L, 250_000L, 500_000L).forEach { bw ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text("${bw / 1000} кГц") },
+                                            onClick = { localBw = bw; bwMenuExpanded = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Spreading factor
+                        SettingRow("SF") {
+                            Box {
+                                FilledTonalButton(onClick = { sfMenuExpanded = true }) {
+                                    Text("SF$localSf")
+                                }
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = sfMenuExpanded,
+                                    onDismissRequest = { sfMenuExpanded = false }
+                                ) {
+                                    (7..12).forEach { sf ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text("SF$sf") },
+                                            onClick = { localSf = sf; sfMenuExpanded = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Coding rate
+                        SettingRow("Coding Rate") {
+                            Box {
+                                FilledTonalButton(onClick = { crMenuExpanded = true }) {
+                                    Text("4/$localCr")
+                                }
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = crMenuExpanded,
+                                    onDismissRequest = { crMenuExpanded = false }
+                                ) {
+                                    (5..8).forEach { cr ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { Text("4/$cr") },
+                                            onClick = { localCr = cr; crMenuExpanded = false }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // TX power slider
+                        Column {
+                            Text("TX Power: ${localTxpower.toInt()} dBm",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Slider(
+                                value = localTxpower,
+                                onValueChange = { localTxpower = it },
+                                valueRange = 2f..17f,
+                                steps = 14,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+
+                    Button(
+                        onClick = ::save,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Сохранить")
+                    }
+                }
+            }
         }
     }
 }

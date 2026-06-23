@@ -5,13 +5,17 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.chaquo.python.Python
+import dev.botoved.rover.AppLogger
 import dev.botoved.rover.data.RoverRepository
 import dev.botoved.rover.data.ServerPreferences
 import dev.botoved.rover.data.db.AreaEntity
 import dev.botoved.rover.data.db.DeviceEntity
 import dev.botoved.rover.data.db.ServerMetaEntity
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class DeviceState(
     val shortId: Int,
@@ -219,10 +223,17 @@ class DashboardViewModel(
         }
     }
 
-    fun handleDebugSendReqArray() {
-        val intent = Intent("dev.botoved.rover.ACTION_DEBUG_SEND_REQ_ARRAY")
-        LocalBroadcastManager.getInstance(context).sendBroadcast(intent)
-        Log.i("Rover", "DEBUG: send req array broadcast sent")
+    suspend fun detectSerialPorts(): List<String> = withContext(Dispatchers.IO) {
+        try {
+            if (!Python.isStarted()) return@withContext emptyList()
+            val arr = org.json.JSONArray(
+                Python.getInstance().getModule("rover_rns").callAttr("list_serial_ports").toString()
+            )
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (e: Exception) {
+            AppLogger.e("Rover", "detectSerialPorts: ${e.message}", e)
+            emptyList()
+        }
     }
 
     private fun parseIsOn(fields: Map<*, *>): Boolean? {

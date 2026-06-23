@@ -67,10 +67,22 @@ class PyRnsBridge(private val context: Context) {
         return true
     }
 
-    fun start(configDir: String, host: String, port: Int): String? {
+    fun listSerialPorts(): List<String> {
+        val module = pyModule ?: return emptyList()
+        return try {
+            val result = module.callAttr("list_serial_ports")
+            val arr = org.json.JSONArray(result.toString())
+            (0 until arr.length()).map { arr.getString(it) }
+        } catch (e: Exception) {
+            AppLogger.e(TAG, "listSerialPorts failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    fun start(configDir: String, host: String, port: Int, rnodeConfigJson: String = "{}"): String? {
         val module = pyModule ?: return null
         return try {
-            val result = module.callAttr("start", configDir, host, port)
+            val result = module.callAttr("start", configDir, host, port, rnodeConfigJson)
             val identity = result.toString()
             AppLogger.i(TAG, "PyRNS identity=$identity host=$host:$port")
             identity

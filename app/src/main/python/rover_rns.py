@@ -69,8 +69,19 @@ def _on_lxmf_message(message: LXMF.LXMessage) -> None:
         print(f"[LXMF_IN] EXCEPTION: {ex}")
 
 
-def start(config_dir: str, host: str, port: int) -> str:
+def list_serial_ports() -> str:
+    import json, glob
+    ports = []
+    for pattern in ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/rfcomm*']:
+        ports.extend(glob.glob(pattern))
+    return json.dumps(sorted(ports))
+
+
+def start(config_dir: str, host: str, port: int, rnode_config_json: str = "{}") -> str:
     global _router, _delivery_dest
+
+    import json as _json
+    rnode_cfg = _json.loads(rnode_config_json) if rnode_config_json else {}
 
     os.makedirs(config_dir, exist_ok=True)
     _init_file_log(config_dir)
@@ -88,6 +99,30 @@ def start(config_dir: str, host: str, port: int) -> str:
     signal.signal = lambda signum, handler: None
     try:
         config_path = os.path.join(config_dir, "config")
+        rnode_section = ""
+        if rnode_cfg.get("enabled"):
+            bt_port = rnode_cfg.get("bt_port")
+            serial_port = rnode_cfg.get("port", "")
+            rp = f"socket://127.0.0.1:{bt_port}" if bt_port else serial_port
+            if rp:
+                freq = rnode_cfg.get("frequency", 869500000)
+                bw   = rnode_cfg.get("bandwidth", 125000)
+                txp  = rnode_cfg.get("txpower", 14)
+                sf   = rnode_cfg.get("spreadingfactor", 7)
+                cr   = rnode_cfg.get("codingrate", 5)
+                rnode_section = f"""
+  [[RNode LoRa]]
+    type = RNodeInterface
+    enabled = Yes
+    port = {rp}
+    frequency = {freq}
+    bandwidth = {bw}
+    txpower = {txp}
+    spreadingfactor = {sf}
+    codingrate = {cr}
+"""
+                print(f"[RNS] RNode enabled port={rp} freq={freq} bw={bw} sf={sf}")
+
         config_content = f"""
 [reticulum]
 enable_transport = True
@@ -100,7 +135,7 @@ loglevel = 7
     enabled = Yes
     target_host = {host}
     target_port = {port}
-"""
+{rnode_section}"""
         with open(config_path, "w") as f:
             f.write(config_content.strip())
 
@@ -155,12 +190,10 @@ def request_path_and_wait(dest_hex: str, timeout_s: float = 3.0) -> bool:
     # Use delivery destination hash if server pk was pre-loaded; otherwise fall back.
     if _server_dest is not None:
         dest_bytes = _server_dest.hash
-        print(f"[PATH_WAIT] using delivery dest {dest_bytes.hex()}")
     else:
         dest_bytes = bytes.fromhex(dest_hex)
         print(f"[PATH_WAIT] WARNING: server pk not set, using raw dest_hex (may fail)")
     if RNS.Transport.has_path(dest_bytes):
-        print(f"[PATH_WAIT] has_path=true immediately")
         return True
     RNS.Transport.request_path(dest_bytes)
     deadline = time.monotonic() + timeout_s
@@ -249,7 +282,11 @@ def send_cmd(server_dest_hex: str, fields_json: str) -> bool:
     import json
     raw = json.loads(fields_json)
     fields = {int(k): v for k, v in raw.items()}
-    return send(server_dest_hex, fields, await_path=True)
+    # No await_path: CMD must be instant; if offline the watchdog will recover
+    if _server_dest is not None and not RNS.Transport.has_path(_server_dest.hash):
+        print(f"[CMD] WARNING: no path to server, dropping cmd")
+        return False
+    return send(server_dest_hex, fields, await_path=False)
 
 
 def send_register(server_dest_hex: str, uid: str) -> bool:

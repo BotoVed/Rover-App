@@ -2,7 +2,10 @@ package dev.botoved.rover.data
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
@@ -20,6 +23,13 @@ class ServerPreferences(private val context: Context) {
         val SERVER_SSID = stringPreferencesKey("server_ssid")
         val IS_REGISTERED = stringPreferencesKey("is_registered")
         val KEY_UID = stringPreferencesKey("uid")
+        val RNODE_ENABLED = booleanPreferencesKey("rnode_enabled")
+        val RNODE_PORT = stringPreferencesKey("rnode_port")
+        val RNODE_FREQ = longPreferencesKey("rnode_freq")
+        val RNODE_BW = longPreferencesKey("rnode_bw")
+        val RNODE_SF = intPreferencesKey("rnode_sf")
+        val RNODE_CR = intPreferencesKey("rnode_cr")
+        val RNODE_TXPOWER = intPreferencesKey("rnode_txpower")
     }
 
     val serverDestHash: Flow<String?> = context.dataStore.data
@@ -67,6 +77,40 @@ class ServerPreferences(private val context: Context) {
     suspend fun saveUid(uid: String) {
         context.dataStore.edit { it[KEY_UID] = uid }
     }
+
+    val rnodeEnabled: Flow<Boolean> = context.dataStore.data.map { it[RNODE_ENABLED] ?: false }
+    val rnodePort: Flow<String> = context.dataStore.data.map { it[RNODE_PORT] ?: "/dev/ttyUSB0" }
+    val rnodeFreq: Flow<Long> = context.dataStore.data.map { it[RNODE_FREQ] ?: 869500000L }
+    val rnodeBw: Flow<Long> = context.dataStore.data.map { it[RNODE_BW] ?: 125000L }
+    val rnodeSf: Flow<Int> = context.dataStore.data.map { it[RNODE_SF] ?: 7 }
+    val rnodeCr: Flow<Int> = context.dataStore.data.map { it[RNODE_CR] ?: 5 }
+    val rnodeTxpower: Flow<Int> = context.dataStore.data.map { it[RNODE_TXPOWER] ?: 14 }
+
+    suspend fun saveRNodeConfig(
+        enabled: Boolean, port: String, freq: Long, bw: Long, sf: Int, cr: Int, txpower: Int
+    ) {
+        context.dataStore.edit { prefs ->
+            prefs[RNODE_ENABLED] = enabled
+            prefs[RNODE_PORT] = port
+            prefs[RNODE_FREQ] = freq
+            prefs[RNODE_BW] = bw
+            prefs[RNODE_SF] = sf
+            prefs[RNODE_CR] = cr
+            prefs[RNODE_TXPOWER] = txpower
+        }
+    }
+
+    fun buildRNodeJson(
+        enabled: Boolean, port: String, freq: Long, bw: Long, sf: Int, cr: Int, txpower: Int
+    ): String = org.json.JSONObject().apply {
+        put("enabled", enabled)
+        put("port", port)
+        put("frequency", freq)
+        put("bandwidth", bw)
+        put("spreadingfactor", sf)
+        put("codingrate", cr)
+        put("txpower", txpower)
+    }.toString()
 
     suspend fun clear() {
         context.dataStore.edit { it.clear() }
